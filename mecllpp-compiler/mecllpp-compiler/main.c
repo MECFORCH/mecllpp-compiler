@@ -119,6 +119,118 @@ void serial_puthex(uint64_t val)
 }
 
 /* ================================================================
+ * PIT (8253/8254) + TSC Sürücüsü
+ *
+ * Port haritası:
+ *   0x40  Kanal 0 veri   (sistem timer — IRQ0 için)
+ *   0x42  Kanal 2 veri   (hoparlör — polling delay için)
+ *   0x43  Mode/Komut yazmaçı
+ *   0x61  Sistem kontrol — bit0=Kanal2 gate, bit1=hoparlör, bit5=OUT2
+ *
+ * RDTSC ile uptime:
+ *   Boot'ta g_boot_tsc kaydedilir.
+ *   PIT kanal 2 üzerinden 10 ms ölçümle g_tsc_khz kalibre edilir.
+ *   Sonraki her rdtsc() - g_boot_tsc / g_tsc_khz = ms uptime verir.
+ * ================================================================ */
+
+#define PIT_FREQ_HZ   1193182UL   /* PIT referans frekansı */
+#define PIT_TICK_HZ   1000u       /* Kanal 0 hedef frekansı (scheduler) */
+
+static uint64_t g_boot_tsc = 0;   /* rdtsc() değeri boot anında */
+static uint64_t g_tsc_khz  = 0;   /* kalibre edilmiş TSC frekansı kHz */
+
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi) : : "ecx");
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* ---- PIT Kanal 2  —  Gecikme (IRQ gerektirmez, OUT2 polling) ----
+ *
+ * port 0x61:
+ *   bit 0 = Kanal 2 gate (1=etkin)
+ *   bit 1 = hoparlör (0=kapalı)
+ *   bit 5 = OUT2 çıkışı (1=sayım bitti)
+ *
+ * Yaklaşık: count = istenen_us * 1193 / 1000
+ */
+static void pit_ch2_oneshot(uint16_t count)
+{
+    /* Gate açık, hoparlör kapalı */
+    uint8_t p61 = (uint8_t)((inb(0x61) | 0x01u) & ~0x02u);
+    outb(0x61, p61);
+
+    outb(0x43, 0xB0u);                      /* Kanal 2, lobyte/hibyte, mod 0, ikili */
+    outb(0x42, (uint8_t)(count & 0xFFu));   /* düşük bayt */
+    outb(0x42, (uint8_t)(count >> 8));      /* yüksek bayt */
+
+    /* OUT2 (bit5) 0→1 olana dek bekle */
+    while (!(inb(0x61) & 0x20u))
+        ;
+}
+
+/* n milisaniye gecikme (~1 ms = 1193 PIT sayımı @ 1193182 Hz) */
+void ms_delay(uint32_t ms)
+{
+    while (ms--)
+        pit_ch2_oneshot(1193u);
+}
+
+/* ---- PIT Kanal 0  —  Sistem Timer Kurulumu (scheduler temeli) ----
+ *
+ * Bölücü = 1193182 / 1000 = 1193  →  ~1 kHz = 1 ms/tick
+ * IRQ0 (bkz. IDT + PIC init ile genişletilebilir)
+ * ---------------------------------------------------------------- */
+static void pit_init(void)
+{
+    uint16_t divisor = (uint16_t)(PIT_FREQ_HZ / PIT_TICK_HZ);
+    outb(0x43, 0x36u);                      /* Kanal 0, lobyte/hibyte, mod 3, ikili */
+    outb(0x40, (uint8_t)(divisor & 0xFFu)); /* düşük bayt */
+    outb(0x40, (uint8_t)(divisor >> 8));    /* yüksek bayt */
+}
+
+/* ---- TSC Kalibrasyonu  —  PIT ile 10 ms ölçüm ---- */
+static void tsc_calibrate(void)
+{
+    uint64_t t0 = rdtsc();
+    ms_delay(10u);
+    uint64_t t1 = rdtsc();
+    uint64_t diff = t1 - t0;
+    /* diff cycles / 10 ms = kHz */
+    g_tsc_khz = (diff > 0u) ? (diff / 10u) : 1u;
+}
+
+/* Boot'tan bu yana geçen süreyi ms olarak döndür */
+static uint64_t uptime_ms(void)
+{
+    if (g_tsc_khz == 0u) return 0u;
+    return (rdtsc() - g_boot_tsc) / g_tsc_khz;
+}
+
+/* Uptime'ı "Xg Xsa Xdk Xsn.XXX" formatında seri porta yaz */
+static void serial_print_uptime(uint64_t ms)
+{
+    uint64_t total_s = ms / 1000u;
+    uint64_t frac    = ms % 1000u;
+    uint64_t sn  = total_s % 60u;
+    uint64_t dk  = (total_s / 60u) % 60u;
+    uint64_t sa  = (total_s / 3600u) % 24u;
+    uint64_t gun = total_s / 86400u;
+
+    char buf[24];
+    if (gun > 0u) {
+        int_to_dec(gun, buf); serial_puts(buf); serial_puts("g ");
+    }
+    serial_put2d((uint8_t)sa);  serial_putc(':');
+    serial_put2d((uint8_t)dk);  serial_putc(':');
+    serial_put2d((uint8_t)sn);  serial_putc('.');
+    serial_putc('0' + (char)(frac / 100u));
+    serial_putc('0' + (char)((frac / 10u) % 10u));
+    serial_putc('0' + (char)(frac % 10u));
+}
+
+/* ================================================================
  * VGA Metin Modu Sürücüsü  (0xB8000)
  *
  * Her hücre 2 bayt: [karakter][renk-niteliği]

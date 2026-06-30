@@ -1,0 +1,67 @@
+═══════════════════════════════════════════════════════
+FIRMAWORK ÇOK-MİMARİLİ SİSTEM — DÜZELTME PROMPTU
+═══════════════════════════════════════════════════════
+
+BOOTLOADER BAĞLAMI: Legacy BIOS boot kullanıyoruz, UEFI YOK.
+BIOS sadece Stage1'i (LBA0, 512B) yükler, gerisi bizim kodumuz
+(Stage1→Stage2→Kernel zinciri). Bu yapıyı koru, değiştirme.
+
+─── 1. DOSYA BOYUTU (hâlâ kısmen sorunlu) ───
+Mevcut: 100KB dosya, sadece ~1.9KB gerçek veri (%98 israf).
+RV32 blob 0x18000'de, ARM64 blob 0x19000'de ama aralarında 
+ve sonrasında hâlâ gereksiz sıfır dolgu var.
+DÜZELT: Blob alanlarını gerçek boyutlarına sıkıştır, linker 
+script'te sabit 1MB/96KB hizalama yerine blob'un gerçek 
+boyutu kadar yer ayır (align sadece gerekli minimum, örn. 16B).
+
+─── 2. RV32 BLOB — sadece UART echo, eksik ───
+Şu an: UART'tan oku, geri yaz, sonsuz döngü. Bu kadar.
+EKLE: 
+- Banner/karşılama mesajı yazdırma (UART'a string çıktı)
+- Basit komut sistemi (en azından "help", "info" gibi 1-2 komut)
+- x86 tarafına geri dönüş mekanizması (invoke_rv32'den sonra 
+  x86 koduna geri jump edebilmeli, şu an muhtemelen sonsuz 
+  döngüde takılı kalıyor, geri dönüşü yok)
+
+─── 3. ARM64 BLOB — aynı eksiklikler ───
+RV32 ile birebir aynı sorunlar: sadece echo, geri dönüş yok,
+banner yok.
+
+─── 4. X86-64 ANA SİSTEM — kritik eksikler ───
+- ResetSystem/ACPI shutdown çağrısı yok — [Kapat] seçeneği 
+  varsa gerçekten kapatmıyor
+- RTC (saat) okuma yok — port 0x70/0x71 üzerinden gerçek 
+  zamanı oku, "Sistem Bilgisi" menüsünde göster
+- GetTime benzeri bir zaman fonksiyonu ekle
+
+─── 5. FST (Firmware Service Table) — eksik servisler ───
+Şu an 6 servis var (serial_puts/putc/getc/puthex, invoke_rv32, 
+invoke_a64). EKLE:
+- FST[6] = shutdown servisi (ACPI port 0x604 veya 0xB004, 
+  QEMU'ya özel ama gerçek donanımda no-op olarak bırak)
+- FST[7] = get_time servisi (RTC okuma)
+- Tüm blob'lar (RV32/ARM64) bu FST tablosunu okuyup x86'nın 
+  servislerini kendi UART yerine kullanabilmeli (opsiyonel ama 
+  mimariyi daha tutarlı yapar)
+
+─── 6. FONT (font_bitmap.h) — küçük tutarsızlık ───
+Türkçe İ (dotted I) glyph'i, standart ASCII I'dan 1 satır kısa 
+(5 satır yerine 6 satır olmalı). Düzelt, gövdeyi tamamla.
+
+─── 7. VGA.H — hâlâ yanlış mimari hedefliyor ───
+Bu dosya hâlâ "QEMU RISC-V Virt board" ve VGA_FB_BASE=0x40000000 
+sabit adresini içeriyor. Bu artık x86-64 ana sistem için kullanılacaksa:
+- Yorum başlığını "x86-64 BIOS VBE/VESA" olarak güncelle
+- VGA_FB_BASE sabitini kaldır, çalışma zamanında INT 0x10 
+  (AX=0x4F01/0x4F02) ile gerçek framebuffer adresini al
+- Eğer bu header SADECE gelecekteki ARM64/RV32 blobları için 
+  kullanılacaksa, açıkça hangi mimari için olduğunu dosya adında 
+  belirt (örn. vga_rv32.h, vga_x86.h) — karışıklığı önle
+
+─── 8. GENEL KURAL (tüm değişikliklerde geçerli) ───
+- Çalışan kodu SİLME, üstüne ekle
+- Her blob (RV32/ARM64) eklenen özellik sonrası x86 ana menüye 
+  geri dönebilmeli, sonsuz döngüde kullanıcıyı kilitleme
+- Build sonrası dosya boyutu kontrolü yap: gerçek veri/toplam 
+  boyut oranı %50'nin altındaysa linker script'i tekrar incele
+═══════════════════════════════════════════════════════

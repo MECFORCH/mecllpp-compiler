@@ -1,17 +1,18 @@
 /* ================================================================
- * FIRMAWORK VGA Framebuffer Sürücüsü — Başlık
+ * FIRMAWORK VGA/VBE Framebuffer Sürücüsü — Başlık
  *
- * Hedef: QEMU RISC-V Virt board, 640×480, 32bpp
+ * Hedef: x86-64 BIOS VBE/VESA, 640×480, 32bpp
  *
- * QEMU başlatma komutu (örnek):
- *   qemu-system-riscv32 -machine virt \
- *     -device VGA \
- *     -kernel firmware.elf \
- *     ...
+ * Framebuffer taban adresi çalışma zamanında belirlenir:
+ *   - Gerçek mod Stage2'de INT 0x10 (AX=0x4F02) ile VBE modu
+ *     ayarlanır ve VbeInfoBlock'tan linFlatBasePtr okunur.
+ *   - Okunan adres, korumalı/uzun moda geçmeden önce bilinen
+ *     bir bellek konumuna yazılır (örn. 0x7000:0 geçiş alanı).
+ *   - Uzun modda vga_set_base() çağrısıyla bu değişkene atanır.
  *
- * VGA_FB_BASE: QEMU virt board'da PCI MMIO bölgesi 0x40000000'dan
- *              başlar. VGA cihazının BAR0'ı buraya düşer.
- *              Farklı bir adres gerekirse bu sabiti değiştirin.
+ * Eğer bu header ARM64/RV32 blobları için kullanılacaksa,
+ * platform'a özgü ayrı bir başlık kullanın (örn. vga_rv32.h).
+ * Bu dosya yalnızca x86-64 ana sistem içindir.
  * ================================================================ */
 
 #ifndef VGA_H
@@ -24,7 +25,8 @@ typedef unsigned char      vga_uint8_t;
 /* ----------------------------------------------------------------
  * Donanım sabitleri
  * ---------------------------------------------------------------- */
-#define VGA_FB_BASE     0x40000000UL   /* PCI BAR0 — framebuffer başlangıcı */
+/* VGA_FB_BASE artık sabit değil — çalışma zamanında INT 0x10 ile alınır.
+ * vga_set_base(addr) ile atanır, vga_get_base() ile okunur.         */
 #define VGA_WIDTH       640
 #define VGA_HEIGHT      480
 #define VGA_BPP         4              /* bayt/piksel (32-bit XRGB8888)      */

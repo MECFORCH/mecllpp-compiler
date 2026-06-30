@@ -45,30 +45,28 @@ SECTIONS
         *(.data*)
     } > RAM
 
+    /* ----------------------------------------------------------------
+     * Mimari blob bölümleri — .data'dan hemen sonra, .bss'ten ÖNCE.
+     *
+     * .bss'ten önce yerleştirerek firmware.bin'de 64 KB BSS boşluğu
+     * oluşmasını önlüyoruz. objcopy -O binary yalnızca son PT_LOAD
+     * segment sonuna kadar yazar; .bss memsz'i içermez.
+     * 16 bayt hizalama yeterli, büyük sayfa hizalamaya gerek yok.
+     * ---------------------------------------------------------------- */
+    .arch_rv32 ALIGN(16) : {
+        KEEP(*(.arch_rv32))
+    } > RAM
+
+    .arch_a64 ALIGN(16) : {
+        KEEP(*(.arch_a64))
+    } > RAM
+
     .bss ALIGN(4096) : {
         __bss_start = .;
         *(.bss*)
         *(COMMON)
         . = ALIGN(16);
         __bss_end = .;
-    } > RAM
-
-    /* ----------------------------------------------------------------
-     * Mimari blob bölümleri — .bss'ten hemen sonra, boşluksuz.
-     *
-     * Sabit adres (0x200000 / 0x300000) kullanmadığımız için
-     * firmware.bin içinde 2x1MB dolgu oluşmaz.
-     * Semboller (rv32_blob_start/end, a64_blob_start/end)
-     * blob_shims.s içindeki etiketlerden gelir; doğrudan
-     *   extern char rv32_blob_start[];
-     * ile main.c'den erişilir.
-     * ---------------------------------------------------------------- */
-    .arch_rv32 ALIGN(4096) : {
-        KEEP(*(.arch_rv32))
-    } > RAM
-
-    .arch_a64 ALIGN(4096) : {
-        KEEP(*(.arch_a64))
     } > RAM
 
     _end = .;

@@ -133,6 +133,10 @@ void serial_puthex(uint64_t val)
  *   Sonraki her rdtsc() - g_boot_tsc / g_tsc_khz = ms uptime verir.
  * ================================================================ */
 
+/* İleri bildirimler — PIT yardımcıları bunlara ihtiyaç duyar */
+static void int_to_dec(uint64_t val, char *buf);
+static void serial_put2d(uint8_t v);
+
 #define PIT_FREQ_HZ   1193182UL   /* PIT referans frekansı */
 #define PIT_TICK_HZ   1000u       /* Kanal 0 hedef frekansı (scheduler) */
 
@@ -679,18 +683,28 @@ static void cmd_rtc(void)
     uint8_t ay  = bcd2bin(cmos_read(0x08));   /* ay     */
     uint8_t yil = bcd2bin(cmos_read(0x09));   /* yıl (son 2 hane) */
 
-    serial_puts("\n--- CMOS RTC ---\n");
-    serial_puts("Saat  : ");
+    serial_puts("\n--- CMOS RTC + Uptime ---\n");
+
+    serial_puts("Saat   : ");
     serial_put2d(sa);  serial_putc(':');
     serial_put2d(dk);  serial_putc(':');
     serial_put2d(sn);  serial_puts("\n");
 
-    serial_puts("Tarih : 20");
+    serial_puts("Tarih  : 20");
     serial_put2d(yil); serial_putc('-');
     serial_put2d(ay);  serial_putc('-');
     serial_put2d(gun); serial_puts("\n");
 
-    serial_puts("(CMOS RTC, BCD okuma — QEMU saatini yansıtır)\n");
+    serial_puts("Uptime : ");
+    serial_print_uptime(uptime_ms());
+    serial_puts("\n");
+
+    serial_puts("TSC    : ");
+    char buf[24];
+    int_to_dec(g_tsc_khz / 1000u, buf);
+    serial_puts(buf);
+    serial_puts(" MHz  (PIT ile kalibre)\n");
+    serial_puts("(CMOS RTC BCD okuma — QEMU saatini yansıtır)\n");
 }
 
 /* ================================================================
@@ -798,6 +812,13 @@ int main(void *mbi, uint64_t magic)
 {
     /* COM1 seri portunu başlat */
     serial_init();
+
+    /* PIT kanal 0'ı 1000 Hz'e kur (scheduler temeli) */
+    pit_init();
+
+    /* Boot TSC'sini kaydet, ardından PIT ile kalibre et (~10 ms) */
+    g_boot_tsc = rdtsc();
+    tsc_calibrate();
 
     /* VGA boot ekranını çiz */
     vga_boot_screen();

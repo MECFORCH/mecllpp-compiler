@@ -1,0 +1,51 @@
+You are an expert low-level systems engineer and compiler designer. Write a complete Python compiler and a RISC-V bare-metal firmware assembly/C architecture for a custom language called ".meclpp" targeting RISC-V 32-bit (rv32) executed on QEMU virt machine (-M virt -bios none).
+
+The system consists of three segments:
+1. firmware.bin (Loaded at 0x80000000) - Acts as the baseline hardware initializer and UART driver.
+2. program.fiawo (Loaded at 0x80200000) - The launcher.
+3. main.fiawo (Loaded at 0x80300000) - The main interactive kernel.
+
+The compiler must implement a Lexer, Parser, and Code Generator for the following overloaded (Dual-Mode) syntax rules. The output format (.fiawo) must be a flat binary consisting of a raw RISC-V machine code block followed by an ASCII data/string block.
+
+--- SYNTAX & OVERLOADING RULES ---
+
+1. 'clean'
+   - Action: Emits ANSI escape sequence to clear screen and home cursor (\x1b[2J\x1b[H) via UART.
+
+2. 'write'
+   - User Mode (write: "text") -> Emits UART string printing routine for the given text.
+   - System Mode (write) -> Reads the current working register/accumulator value and prints it to UART as a Hex/Decimal string.
+
+3. 'read'
+   - User Mode (read: "prompt") -> First prints the prompt string to UART, then enters a polling loop waiting for a character from UART RX (0x10000000), echoes it back, and stores it.
+   - System Mode (read) -> Reads the hardware cycle counter CSR (mcycle) or uptime ticks and stores it in the working register.
+
+4. 'delay'
+   - User Mode (delay: <integer>) -> Uses a precise hardware timing loop to pause execution for the specified milliseconds (e.g., delay: 2000 pauses for 2 seconds).
+   - System Mode (delay) -> Pauses execution for a default hardcoded period of 1000 milliseconds.
+
+5. 'color'
+   - User Mode (color: "color_name") -> Emits ANSI color codes via UART. Support "red" (\x1b[31m), "green" (\x1b[32m), "blue" (\x1b[34m), and "yellow" (\x1b[33m).
+   - System Mode (color) -> Emits the ANSI reset code (\x1b[0m) to restore default terminal colors.
+
+6. 'sys'
+   - User Mode (sys: "reboot") -> Performs a software reset by jumping directly back to the launcher start address (0x80200000).
+   - System Mode (sys) -> Prints baseline CPU metadata (Architecture: RISC-V 32, UART Base: 0x10000000) to the screen.
+
+7. 'halt'
+   - System Mode (halt) -> Writes to the QEMU test/poweroff financial register or enters an infinite low-power sleep state (wfi loop) to halt the emulator.
+
+8. Labels and Jumps
+   - Support ':LABEL_NAME' definition and 'jump: LABEL_NAME' unconditional branching.
+
+--- COMPILER REQUIREMENTS (compiler.py) ---
+- Implement the Lexer using regex to tokenize the dual-mode commands accurately.
+- Implement a single-pass or multi-pass Parser that builds an Abstract Syntax Tree (AST) handling arguments or lack thereof.
+- Implement the Code Generator that emits valid 32-bit RISC-V opcodes (like lui, li, sw, lw, jalr, csrr) representing the logic.
+- Ensure string literals are collected and placed at the end of the binary file, with instructions pointing to their correct memory offsets relative to the loading address (0x80300000 for main).
+
+--- FIRMWARE REQUIREMENTS (firmware.s / firmware.c) ---
+- Provide the basic boot and initialization assembly code that sets up the stack pointer (sp) and jumps to the loaded binary's entry point.
+- Provide the MMIO UART0 (0x10000000) read/write driver code used by the compiled instructions.
+
+Please output the clean, fully commented, production-ready Python compiler script and the necessary boilerplate files to make this architecture fully functional on QEMU.

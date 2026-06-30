@@ -1,0 +1,6 @@
+write:"Merhaba FIRMAWORK x86-64!"
+wait:2 sec
+write:"2 saniye beklendi."
+clean
+continue
+write:"Ekran temizlendi, devam ediyor."

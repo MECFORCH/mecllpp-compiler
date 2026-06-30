@@ -1,0 +1,4 @@
+write:"[STAGE 1] Testing freeze..."
+wait:2 sec
+clean
+write:"[ERROR] This should not be printed if continue is missing!"

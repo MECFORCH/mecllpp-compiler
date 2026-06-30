@@ -1,0 +1,9 @@
+# kod.meclpp — FIRMAWORK Boot Launcher
+# Loaded at 0x80200000; firmware menu option [3] jumps here.
+
+write:"[LAUNCHER] FIRMAWORK Boot Sequence — compiler.py v2.0"
+delay:1500
+color:"yellow"
+write:"[LAUNCHER] Transferring control to main kernel (0x80300000)..."
+color
+visit:main.meclpp

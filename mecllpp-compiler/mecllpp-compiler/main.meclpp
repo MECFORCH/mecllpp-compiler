@@ -1,0 +1,78 @@
+# main.meclpp — FIRMAWORK Authentication Shell Demo
+# compiler.py v2.0 — exercises all 20 dual-mode token types
+# ==========================================================
+
+clean
+color:"green"
+write:"=================================================="
+write:"  FIRMAWORK Auth Shell  |  compiler.py  v2.0"
+write:"=================================================="
+color
+
+# Print CPU metadata (sys system-mode token)
+sys
+
+color:"yellow"
+write:"[AUTH] Type lowercase 'q' to authenticate."
+write:"[AUTH] Any other key triggers UART Bell and loops."
+color
+
+# ── Initialise attempt counter to 0 ──────────────────────────
+# 'set' (sys mode) zeroes the accumulator (s0 = 0)
+# 'set:"tries"' stores that 0 into RAM variable 'tries'
+set
+set:"tries"
+
+# ── Main authentication loop ──────────────────────────────────
+:LOOP
+
+color:"yellow"
+write:"[AUTH] Waiting for passphrase..."
+color
+
+# read:"prompt" — print prompt, poll UART RX, echo char, store in s0
+read:"  auth> "
+
+# if:"q"  — if s0 != 'q' → SKIP the following jump
+# if s0 == 'q' → jump executes → GRANTED
+if:"q"
+jump:GRANTED
+
+# ── Wrong-key path ───────────────────────────────────────────
+# Send ASCII BEL (beep) via uart_putc (FST[1])
+beep
+
+# Increment the attempt counter stored in RAM
+get:"tries"
+add:1
+set:"tries"
+
+# Print attempt count (accumulator = tries after add:1)
+color:"red"
+write:"[AUTH] Access denied!"
+color
+write:"[AUTH] Attempt "
+write
+write:"[AUTH] Retrying in 1 second..."
+delay:1000
+jump:LOOP
+
+# ── GRANTED path ─────────────────────────────────────────────
+:GRANTED
+
+color:"green"
+write:"[AUTH] ACCESS GRANTED — passphrase accepted!"
+color
+
+# Load fail-count and display it
+get:"tries"
+write:"[AUTH] Failed attempts before success: "
+write
+
+# Sound success beep
+beep
+
+# Brief pause then soft-reboot to launcher
+write:"[AUTH] Soft-rebooting to launcher (0x80200000) in 3 s..."
+delay:3000
+sys:"reboot"

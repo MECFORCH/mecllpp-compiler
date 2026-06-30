@@ -1,0 +1,60 @@
+You are an elite low-level systems engineer, OS kernel architect, and compiler engineer. Write a complete, production-ready Python compiler (compiler.py) and the bare-metal RISC-V infrastructure for a highly advanced custom programming language called ".meclpp" targeting a RISC-V 32-bit (rv32) CPU executed on QEMU's virt machine (-M virt -bios none).
+
+--- MEMORY SEGMENTATION MAP ---
+1. firmware.bin (Loaded at 0x80000000) - Baseline hardware initializer, stack pointer setup, and MMIO UART0 driver.
+2. program.fiawo (Loaded at 0x80200000) - Launcher segment.
+3. main.fiawo (Loaded at 0x80300000) - Main interactive kernel segment with memory variables.
+
+The compiler must output a flat binary (.fiawo) featuring a raw machine code block followed by a structural ASCII string/data block. Implement a complete Lexer, Parser, and Code Generator using an internal working register/accumulator (e.g., register t0) to store temporary states, supporting the following dual-mode (overloaded) syntax:
+
+--- EXPANDED DUAL-MODE HARDWARE & SYNTAX RULES ---
+
+1. 'clean'
+   - Action: Emits ANSI escape sequence via UART to clear the screen and home the cursor (\x1b[2J\x1b[H).
+
+2. 'write'
+   - User Mode (write: "text") -> Emits a loop printing the raw ASCII string to UART TX (0x10000000).
+   - System Mode (write) -> Converts the current value inside the accumulator register to an ASCII Hex/Decimal string and prints it to UART.
+
+3. 'read'
+   - User Mode (read: "prompt") -> Prints the prompt string, then loops polling the UART Line Status Register (0x10000005) bit 0 (Data Ready). Once triggered, reads the ASCII byte from UART RX (0x10000000), echoes it back to TX, and stores it in the accumulator.
+   - System Mode (read) -> Reads the CPU hardware cycle counter CSR (mcycle) via 'csrr' and stores the 32-bit value into the accumulator.
+
+4. 'delay'
+   - User Mode (delay: <integer>) -> Executes a hardware loop matching CPU clock frequency to pause execution for the specified milliseconds.
+   - System Mode (delay) -> Pauses execution for a default hardcoded period of exactly 1000 milliseconds.
+
+5. 'color'
+   - User Mode (color: "color_name") -> Emits ANSI color codes via UART. Supports "red" (\x1b[31m), "green" (\x1b[32m), "blue" (\x1b[34m), and "yellow" (\x1b[33m).
+   - System Mode (color) -> Emits the ANSI reset code (\x1b[0m) to restore terminal colors.
+
+6. 'sys'
+   - User Mode (sys: "reboot") -> Performs a soft-reset by jumping execution back to the launcher base address (0x80200000).
+   - System Mode (sys) -> Prints system metadata ("ARCH: RISC-V 32 | MEM_BASE: 0x80000000") to the screen.
+
+7. 'halt'
+   - System Mode (halt) -> Halts the execution cleanly by putting the CPU into a low-power infinite sleep state (wfi loop) or writing to QEMU financial registers.
+
+8. 'if' (NEW: Conditional Logic)
+   - User Mode (if: "char") -> Compares the lower byte of the accumulator register with the literal character provided. If they are NOT equal, skips execution of the immediately following instruction (conditional skip or branch).
+   - System Mode (if) -> Checks if the accumulator register value is exactly 0. If it is NOT 0, skips the immediately following instruction.
+
+9. 'set' and 'get' (NEW: Memory Management)
+   - User Mode (set: "var_name") -> Allocates static space in the RAM segment or binary data section for 'var_name' and stores the current accumulator value into that memory address.
+   - User Mode (get: "var_name") -> Loads the 32-bit value stored at the memory address of 'var_name' back into the accumulator register.
+   - System Mode (set) -> Explicitly zeroes out (clears) the accumulator register.
+
+10. 'add' (NEW: Math Engine)
+    - User Mode (add: <integer>) -> Adds the literal integer value directly to the current value in the accumulator register.
+    - System Mode (add) -> Automatically adds a default system tick compensation offset (+1) to the accumulator.
+
+11. 'beep' (NEW: Hardware Sound)
+    - System Mode (beep) -> Sends the ASCII Bell character (\x07) via UART, instructing the QEMU emulator terminal to trigger an audio beep sound.
+
+12. Control Flow
+    - Labels are defined as ':LABEL_NAME' and unconditional branches are invoked using 'jump: LABEL_NAME'.
+
+--- COMPILER & FIRMWARE REQUIREMENTS ---
+- 'compiler.py': Must build a clean Abstract Syntax Tree (AST) handling argument overloading, tracking variable memory mapping addresses dynamically, and emitting accurate 32-bit RISC-V opcodes.
+- 'firmware.s': Simple GNU assembler bootstrapper setting up the stack pointer (sp) and calling the entry point.
+- Provide a robust sample demonstration script written in '.meclpp' implementing an authentication/shell sequence: it clears screen, sets color to yellow, loops until the user presses the 'passthrough' key (using 'read', 'if', and 'jump'), stores state using 'set', increments cycles via 'add', sounds a hardware 'beep', and triggers a 'sys: "reboot"' if criteria are met.

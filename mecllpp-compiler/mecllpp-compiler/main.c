@@ -1,0 +1,647 @@
+/* ================================================================
+ * FIRMAWORK Bare-Metal Firmware  —  x86-64 Long Mode
+ *
+ * Bellek Haritası:
+ *   0x000B8000  VGA Metin Tamponu (80×25, 16 renk)
+ *   0x000F0000  BIOS ROM bölgesi
+ *   0x00100000  Firmware kodu (bu ikili, Multiboot tarafından yüklenir)
+ *   0x00200000  RISC-V 32 mikro-kernel blobu  (firmware.bin içine gömülü)
+ *   0x00300000  AArch64 mikro-kernel blobu   (firmware.bin içine gömülü)
+ *   0x80100000  Firmware Servis Tablosu (FST) — 6 yuva
+ *   0x80200000  .fiawo Segment 0  (QEMU -device loader ile yüklenir)
+ *   0x80300000  .fiawo Segment 1  (visit hedefi — main.meclpp)
+ *
+ * Firmware Servis Tablosu (x86-64, 64-bit işaretçiler):
+ *   FST[0]  serial_puts(const char *)
+ *   FST[1]  serial_putc(char)
+ *   FST[2]  serial_getc(void) → char
+ *   FST[3]  serial_puthex(unsigned long)
+ *   FST[4]  invoke_rv32(void) — RV32 blob @ 0x200000 hakkında bilgi ver
+ *   FST[5]  invoke_a64(void)  — A64 blob @ 0x300000 hakkında bilgi ver
+ *
+ * .fiawo Yükleyici:
+ *   QEMU komutu: -device loader,file=kod.fiawo,addr=0x80200000,force-raw=on
+ *   Firmware menüsü [3] ile o adrese atlanır ve x86-64 kodu çalıştırılır.
+ *   .fiawo ikilileri derleyici v4 tarafından üretilir (derleyici.c → x86-64).
+ *
+ * Donanım:
+ *   Seri Port : COM1 (0x3F8) — UART MMIO yerine x86 I/O portları
+ *   Ekran     : VGA Metin Modu (0xB8000), 80×25, CP437
+ *
+ * Derleme:
+ *   clang --target=x86_64-elf -nostdlib -ffreestanding \
+ *         -fno-stack-protector -mno-red-zone           \
+ *         -T linker.ld entry.s main.c -o firmware.elf
+ * ================================================================ */
+
+/* ---- Temel türler (libc yok) ---- */
+typedef unsigned char      uint8_t;
+typedef unsigned short     uint16_t;
+typedef unsigned int       uint32_t;
+typedef unsigned long      uint64_t;
+typedef unsigned long      uintptr_t;
+typedef signed long        intptr_t;
+typedef unsigned long      size_t;
+
+/* ================================================================
+ * COM1 Seri Port Sürücüsü  (x86 I/O port 0x3F8)
+ *
+ * NS16550A MMIO yerine x86 IN/OUT komutları kullanılır.
+ * ================================================================ */
+#define COM1_BASE   0x3F8u
+
+static inline void outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1"
+                      : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint8_t inb(uint16_t port)
+{
+    uint8_t val;
+    __asm__ volatile ("inb %1, %0"
+                      : "=a"(val) : "Nd"(port) : "memory");
+    return val;
+}
+
+static void serial_init(void)
+{
+    outb(COM1_BASE + 1, 0x00);  /* Tüm kesmeler devre dışı       */
+    outb(COM1_BASE + 3, 0x80);  /* DLAB aç (Baud Rate Bölücü)    */
+    outb(COM1_BASE + 0, 0x01);  /* 115200 baud — bölücü düşük    */
+    outb(COM1_BASE + 1, 0x00);  /* bölücü yüksek                  */
+    outb(COM1_BASE + 3, 0x03);  /* 8 bit, parite yok, 1 stop biti */
+    outb(COM1_BASE + 2, 0xC7);  /* FIFO etkin, 14 bayt eşiği      */
+    outb(COM1_BASE + 4, 0x0B);  /* RTS/DSR set                    */
+}
+
+/* TX hazır olana dek bekle, sonra karakteri gönder */
+void serial_putc(char c)
+{
+    while (!(inb(COM1_BASE + 5) & 0x20))
+        ;
+    outb(COM1_BASE, (uint8_t)c);
+}
+
+/* Null-sonlandırmalı dizeyi gönder; '\n' → '\r\n' */
+void serial_puts(const char *s)
+{
+    while (*s) {
+        if (*s == '\n')
+            serial_putc('\r');
+        serial_putc(*s++);
+    }
+}
+
+/* RX hazır olana dek bekle, karakteri oku */
+char serial_getc(void)
+{
+    while (!(inb(COM1_BASE + 5) & 0x01))
+        ;
+    return (char)inb(COM1_BASE);
+}
+
+/* 64-bit değeri "0x" + 16 onaltılık basamak olarak yaz */
+void serial_puthex(uint64_t val)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    int i;
+    serial_puts("0x");
+    for (i = 15; i >= 0; i--)
+        serial_putc(hex[(val >> (i * 4)) & 0xF]);
+    serial_puts("\r\n");
+}
+
+/* ================================================================
+ * VGA Metin Modu Sürücüsü  (0xB8000)
+ *
+ * Her hücre 2 bayt: [karakter][renk-niteliği]
+ * Renk niteliği: [arka-plan:4bit][ön-plan:4bit]
+ * ================================================================ */
+#define VGA_TEXT_BASE   0x000B8000UL
+#define VGA_COLS        80
+#define VGA_ROWS        25
+
+/* VGA renk kodları */
+#define VC_BLACK      0
+#define VC_BLUE       1
+#define VC_GREEN      2
+#define VC_CYAN       3
+#define VC_RED        4
+#define VC_MAGENTA    5
+#define VC_BROWN      6
+#define VC_LGRAY      7
+#define VC_DGRAY      8
+#define VC_LBLUE      9
+#define VC_LGREEN     10
+#define VC_LCYAN      11
+#define VC_LRED       12
+#define VC_LMAGENTA   13
+#define VC_YELLOW     14
+#define VC_WHITE      15
+
+#define VGA_ATTR(fg, bg)  ((uint8_t)(((bg) << 4) | (fg)))
+
+static inline volatile uint16_t *vga_fb(void)
+{
+    return (volatile uint16_t *)VGA_TEXT_BASE;
+}
+
+static void vga_clear(uint8_t attr)
+{
+    volatile uint16_t *fb = vga_fb();
+    uint16_t blank = (uint16_t)((uint16_t)attr << 8) | ' ';
+    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++)
+        fb[i] = blank;
+}
+
+static void vga_putc(int col, int row, char c, uint8_t attr)
+{
+    if ((unsigned)col >= VGA_COLS || (unsigned)row >= VGA_ROWS) return;
+    vga_fb()[row * VGA_COLS + col] = (uint16_t)((uint16_t)attr << 8) | (uint8_t)c;
+}
+
+static void vga_fill(int col, int row, int len, char c, uint8_t attr)
+{
+    for (int i = 0; i < len; i++)
+        vga_putc(col + i, row, c, attr);
+}
+
+/* String yaz; '\n' ile satır başına döner.
+ * out_col / out_row: sonraki yazma konumu (NULL iletebilirsin). */
+static void vga_puts(int col, int row, const char *s, uint8_t attr,
+                     int *out_col, int *out_row)
+{
+    int c = col, r = row;
+    while (*s) {
+        if (*s == '\n') {
+            c = col; r++;
+        } else {
+            if (c >= VGA_COLS) { c = 0; r++; }
+            if (r >= VGA_ROWS) r = 0;
+            vga_putc(c, r, *s, attr);
+            c++;
+        }
+        s++;
+    }
+    if (out_col) *out_col = c;
+    if (out_row) *out_row = r;
+}
+
+/* Sayıyı onaltılık olarak VGA'ya yaz (16 basamak) */
+static void vga_puthex64(int col, int row, uint64_t val, uint8_t attr)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char buf[19];
+    buf[0] = '0'; buf[1] = 'x';
+    for (int i = 0; i < 16; i++)
+        buf[2 + i] = hex[(val >> ((15 - i) * 4)) & 0xF];
+    buf[18] = '\0';
+    vga_puts(col, row, buf, attr, 0, 0);
+}
+
+/* ================================================================
+ * VGA Boot Ekranı
+ * ================================================================ */
+
+static void draw_header(void)
+{
+    uint8_t hdr = VGA_ATTR(VC_YELLOW, VC_BLUE);
+    vga_fill(0, 0, VGA_COLS, ' ', hdr);
+    vga_puts(2, 0,
+             "FIRMAWORK v0.0003  |  x86-64 Long Mode  |  COM1:115200",
+             hdr, 0, 0);
+}
+
+static void draw_logo(void)
+{
+    uint8_t lo = VGA_ATTR(VC_YELLOW, VC_BLACK);
+    uint8_t bo = VGA_ATTR(VC_WHITE,  VC_BLACK);
+
+    vga_fill(0, 1, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
+
+    vga_puts(4, 2,  " _____ ___ ____  __  __   _    _____  ___  ____  _  __", lo, 0, 0);
+    vga_puts(4, 3,  "|  ___|_ _|  _ \\|  \\/  | / \\  |_   _|/ _ \\|  _ \\| |/ /", lo, 0, 0);
+    vga_puts(4, 4,  "| |_   | || |_) | |\\/| |/ _ \\   | | | | | | |_) | ' / ", lo, 0, 0);
+    vga_puts(4, 5,  "|  _|  | ||  _ <| |  | / ___ \\  | | | |_| |  _ <| . \\ ", lo, 0, 0);
+    vga_puts(4, 6,  "|_|   |___|_| \\_\\_|  |_/_/   \\_\\ |_|  \\___/|_| \\_\\_|\\_\\", lo, 0, 0);
+
+    vga_puts(4, 7,  "  Bare-Metal x86-64 Firmware  |  Kendi fontumuz: font.h  |  VGA:0xB8000",
+             bo, 0, 0);
+
+    vga_fill(0, 8, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
+}
+
+static void draw_sysinfo(void)
+{
+    uint8_t gr = VGA_ATTR(VC_LGREEN,  VC_BLACK);
+    uint8_t cy = VGA_ATTR(VC_LCYAN,   VC_BLACK);
+    uint8_t wh = VGA_ATTR(VC_WHITE,   VC_BLACK);
+    uint8_t yw = VGA_ATTR(VC_YELLOW,  VC_BLACK);
+
+    vga_puts(2,  9,  "Mimari    :", yw, 0, 0);
+    vga_puts(14, 9,  "x86-64 Long Mode (64-bit)", gr, 0, 0);
+
+    vga_puts(2,  10, "Bellenim  :", yw, 0, 0);
+    vga_puts(14, 10, "FIRMAWORK v0.0003", gr, 0, 0);
+
+    vga_puts(2,  11, "Seri Port :", yw, 0, 0);
+    vga_puts(14, 11, "COM1  0x3F8  115200-8N1  (x86 IN/OUT)", gr, 0, 0);
+
+    vga_puts(2,  12, "Ekran     :", yw, 0, 0);
+    vga_puts(14, 12, "VGA Metin Modu  0xB8000  80x25  CP437", gr, 0, 0);
+
+    vga_puts(2,  13, "Sayfalama :", yw, 0, 0);
+    vga_puts(14, 13, "4-seviyeli (PML4)  1 GB devasa sayfalar  kimlik esleme", gr, 0, 0);
+
+    vga_fill(0, 14, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
+
+    vga_puts(2,  15, "Firmware Servis Tablosu (FST) @ 0x80100000:", cy, 0, 0);
+    vga_puts(4,  16, "FST[0]  serial_puts (const char *)", wh, 0, 0);
+    vga_puts(4,  17, "FST[1]  serial_putc (char)", wh, 0, 0);
+    vga_puts(4,  18, "FST[2]  serial_getc () -> char", wh, 0, 0);
+    vga_puts(4,  19, "FST[3]  serial_puthex (uint64_t)", wh, 0, 0);
+
+    vga_fill(0, 20, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
+
+    vga_puts(2,  21, "Turkce font (font.h, 8x16 bitmap):", yw, 0, 0);
+    vga_puts(2,  22, "  s+cedilla  S+cedilla  g+breve  G+breve",
+             VGA_ATTR(VC_LMAGENTA, VC_BLACK), 0, 0);
+    vga_puts(2,  23, "  dotless-i  dotted-I   o-umlaut  O-umlaut  u-umlaut  U-umlaut",
+             VGA_ATTR(VC_LMAGENTA, VC_BLACK), 0, 0);
+}
+
+static void draw_footer(void)
+{
+    uint8_t ft = VGA_ATTR(VC_YELLOW, VC_BLUE);
+    vga_fill(0, 24, VGA_COLS, ' ', ft);
+    vga_puts(2, 24, "COM1: [1] Sistem Bilgisi   [2] Echo Modu   Cikis: Ctrl+A x",
+             ft, 0, 0);
+}
+
+static void vga_boot_screen(void)
+{
+    vga_clear(VGA_ATTR(VC_LGRAY, VC_BLACK));
+    draw_header();
+    draw_logo();
+    draw_sysinfo();
+    draw_footer();
+}
+
+/* ================================================================
+ * Mimari Blob Sembolleri  (blob_shims.s / linker tarafından tanımlanır)
+ * ================================================================ */
+extern char rv32_blob_start[], rv32_blob_end[];
+extern char a64_blob_start[],  a64_blob_end[];
+
+/* RV32 blob boyutunu bayt olarak döndür */
+static uint64_t rv32_blob_size(void)
+{
+    return (uint64_t)(rv32_blob_end - rv32_blob_start);
+}
+
+/* A64 blob boyutunu bayt olarak döndür */
+static uint64_t a64_blob_size(void)
+{
+    return (uint64_t)(a64_blob_end - a64_blob_start);
+}
+
+/* İlk N baytı seri porta hex olarak yaz */
+static void dump_blob_head(const char *p, uint64_t sz)
+{
+    static const char h[] = "0123456789ABCDEF";
+    uint64_t n = sz < 8 ? sz : 8;
+    uint64_t i;
+    for (i = 0; i < n; i++) {
+        serial_putc(h[(p[i] >> 4) & 0xF]);
+        serial_putc(h[ p[i]       & 0xF]);
+        serial_putc(' ');
+    }
+    serial_puts("\n");
+}
+
+/* ================================================================
+ * Mimari Blob Çağırıcıları  (FST[4] ve FST[5])
+ *
+ * meclpp'den "invoke:riscv32" / "invoke:aarch64" komutu bu
+ * fonksiyonları çağırır.  x86-64 CPU doğrudan RV32/A64 kodu
+ * çalıştıramaz; bu fonksiyonlar blob bilgisi verir ve gelecekteki
+ * yorumlayıcı/hipervizör katmanı için yer tutar.
+ * ================================================================ */
+void invoke_rv32(void)
+{
+    uint64_t addr = (uint64_t)(uintptr_t)rv32_blob_start;
+    uint64_t sz   = rv32_blob_size();
+    serial_puts("\n[INVOKE] RISC-V 32 blogu\n");
+    serial_puts("  Adres : ");  serial_puthex(addr);
+    serial_puts("  Boyut : ");  serial_puthex(sz);
+    serial_puts("  ilk 8B: "); dump_blob_head(rv32_blob_start, sz);
+    serial_puts("  [LOAD ADDR: 0x80000000 | NS16550 @ 0x10000000]\n");
+    serial_puts("  Blogu calıstırmak icin: --arch=riscv32 ile ./calistir.sh\n");
+}
+
+void invoke_a64(void)
+{
+    uint64_t addr = (uint64_t)(uintptr_t)a64_blob_start;
+    uint64_t sz   = a64_blob_size();
+    serial_puts("\n[INVOKE] AArch64 blogu\n");
+    serial_puts("  Adres : ");  serial_puthex(addr);
+    serial_puts("  Boyut : ");  serial_puthex(sz);
+    serial_puts("  ilk 8B: "); dump_blob_head(a64_blob_start, sz);
+    serial_puts("  [LOAD ADDR: 0x40000000 | PL011 @ 0x09000000]\n");
+    serial_puts("  Blogu calıstırmak icin: --arch=aarch64 ile ./calistir.sh\n");
+}
+
+/* ================================================================
+ * .fiawo Segment Adresleri
+ *
+ * QEMU ile yükleme:
+ *   -device loader,file=kod.fiawo,addr=0x80200000,force-raw=on
+ *
+ * Adres seçimi:
+ *   0x80200000 → Segment 0  (birincil .fiawo giriş noktası)
+ *   0x80300000 → Segment 1  (visit:main.meclpp hedefi)
+ *
+ * Not: Her iki adres de PML4 kimlik eşlemesinin içindedir
+ *      (PDPT[2]: 0x80000000–0xBFFFFFFF).
+ * ================================================================ */
+#define FIAWO_SEG0  0x80200000UL   /* birincil segment */
+#define FIAWO_SEG1  0x80300000UL   /* visit hedefi     */
+
+/* İlk birkaç baytı oku, sıfır olmayan içerik var mı diye bak.
+ * Yüklenmiş .fiawo: 0x48 (REX.W öneki) ile başlar.
+ * Yüklenmemiş bellek: genellikle 0x00 veya 0xFF olur. */
+static int fiawo_probe(uint64_t addr)
+{
+    volatile uint8_t *p = (volatile uint8_t *)addr;
+    /* İlk 8 baytın hepsinin 0x00 ya da 0xFF olup olmadığını kontrol et */
+    uint8_t first = p[0];
+    if (first == 0x00 || first == 0xFF) return 0;
+    return 1;  /* büyük olasılıkla yüklü */
+}
+
+/* .fiawo segmentini bilgi olarak yazdır */
+static void fiawo_info(uint64_t addr, const char *label)
+{
+    uint8_t yw  = VGA_ATTR(VC_YELLOW, VC_BLACK);
+    uint8_t gn  = VGA_ATTR(VC_LGREEN, VC_BLACK);
+    uint8_t rd  = VGA_ATTR(VC_LRED,   VC_BLACK);
+
+    serial_puts("  ");
+    serial_puts(label);
+    serial_puts(" @ ");
+    serial_puthex(addr);
+    if (fiawo_probe(addr)) {
+        serial_puts("      durum: YUKLU  (ilk bayt=");
+        serial_puthex(*(volatile uint8_t *)addr);
+        serial_puts(")\n");
+        (void)gn;
+    } else {
+        serial_puts("      durum: YOK / BOSH\n");
+        (void)rd;
+    }
+    (void)yw;
+}
+
+/* .fiawo'ya mutlak atlama — inline asm ile temiz bir JMP.
+ * Bu fonksiyon asla geri dönmez; .fiawo FREEZE (EB FE) ile biter. */
+static void __attribute__((noreturn)) fiawo_jump(uint64_t addr)
+{
+    __asm__ volatile (
+        "movq %0, %%rax\n\t"
+        "jmp  *%%rax"
+        :
+        : "r"(addr)
+        : "rax"
+    );
+    __builtin_unreachable();
+}
+
+/* ================================================================
+ * Firmware Servis Tablosu (FST)
+ * 0x80100000 adresine 64-bit işaretçiler yazılır.
+ * ================================================================ */
+#define FST_BASE  0x80100000UL
+
+static void fst_init(void)
+{
+    volatile uint64_t *fst = (volatile uint64_t *)FST_BASE;
+    fst[0] = (uint64_t)(uintptr_t)serial_puts;
+    fst[1] = (uint64_t)(uintptr_t)serial_putc;
+    fst[2] = (uint64_t)(uintptr_t)serial_getc;
+    fst[3] = (uint64_t)(uintptr_t)serial_puthex;
+    fst[4] = (uint64_t)(uintptr_t)invoke_rv32;
+    fst[5] = (uint64_t)(uintptr_t)invoke_a64;
+}
+
+/* ================================================================
+ * Multiboot Bilgi Yapısı (Multiboot 1, ilgili alanlar)
+ * ================================================================ */
+typedef struct {
+    uint32_t flags;
+    uint32_t mem_lower;
+    uint32_t mem_upper;
+    uint32_t boot_device;
+    uint32_t cmdline;
+    uint32_t mods_count;
+    uint32_t mods_addr;
+    uint32_t syms[4];
+    uint32_t mmap_length;
+    uint32_t mmap_addr;
+} MultibootInfo;
+
+/* ================================================================
+ * UART Menü Komutları
+ * ================================================================ */
+static void print_menu(void)
+{
+    serial_puts("\n========================================\n");
+    serial_puts("   FIRMAWORK x86-64  --  Ana Menu\n");
+    serial_puts("========================================\n");
+    serial_puts("  [1] Sistem Bilgisi\n");
+    serial_puts("  [2] Klavye Echo Modu  (Cikis: Ctrl+])\n");
+    serial_puts("  [3] .fiawo Calistir  @ 0x80200000\n");
+    serial_puts("  [4] .fiawo Durum     (segment kontrol)\n");
+    serial_puts("  [5] Arch Bloblari    (RV32 + A64 bilgi)\n");
+    serial_puts("========================================\n");
+    serial_puts("Seciminiz: ");
+}
+
+/* ---- .fiawo komutları ---- */
+
+static void cmd_fiawo_run(void)
+{
+    serial_puts("\n--- .fiawo Segment Kontrol ---\n");
+    fiawo_info(FIAWO_SEG0, "Seg0 @ 0x80200000");
+    fiawo_info(FIAWO_SEG1, "Seg1 @ 0x80300000");
+
+    if (!fiawo_probe(FIAWO_SEG0)) {
+        serial_puts("\n[HATA] Segment 0 bos veya yuklenmemis!\n");
+        serial_puts("QEMU'yu su parametreyle calistirin:\n");
+        serial_puts("  FIAWO=kod.fiawo ./calistir.sh\n");
+        serial_puts("ya da dogrudan:\n");
+        serial_puts("  -device loader,file=kod.fiawo,"
+                    "addr=0x80200000,force-raw=on\n");
+        return;
+    }
+
+    serial_puts("\n[OK] Segment 0 yuklu. Kontrolu .fiawo'ya devrediyorum...\n");
+    serial_puts("(Geri donus yok; .fiawo FREEZE ile sonlanir.)\n");
+    serial_puts("------------------------------------------\n");
+
+    /* Seri port tamponunun bitmesini bekle */
+    for (volatile int i = 0; i < 200000; i++) {}
+
+    fiawo_jump(FIAWO_SEG0);
+    /* NOTREACHED */
+}
+
+static void cmd_fiawo_info(void)
+{
+    serial_puts("\n--- .fiawo Segment Durumlari ---\n");
+    fiawo_info(FIAWO_SEG0, "Seg0 (birincil, giris)");
+    fiawo_info(FIAWO_SEG1, "Seg1 (visit hedefi)   ");
+    serial_puts("\nSegment yuklemek icin:\n");
+    serial_puts("  FIAWO=kod.fiawo ./calistir.sh\n");
+    serial_puts("\nDerlemek icin:\n");
+    serial_puts("  gcc derleyici.c -o derleyici\n");
+    serial_puts("  ./derleyici kod.meclpp  ->  kod.fiawo\n");
+}
+
+static void int_to_dec(uint64_t val, char *buf)
+{
+    if (val == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
+    char tmp[21];
+    int i = 0;
+    while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+    int j = 0;
+    while (i > 0) buf[j++] = tmp[--i];
+    buf[j] = '\0';
+}
+
+static void cmd_arch_blobs(void)
+{
+    serial_puts("\n--- Gomulu Mimari Bloblari ---\n");
+    serial_puts("  Mimari   Adres       Boyut\n");
+    serial_puts("  -------  ----------  --------\n");
+    serial_puts("  RV32     ");
+    serial_puthex((uint64_t)(uintptr_t)rv32_blob_start);
+    serial_puts("  ");
+    serial_puthex(rv32_blob_size());
+    serial_puts("  ilk 8B: ");
+    dump_blob_head(rv32_blob_start, rv32_blob_size());
+    serial_puts("  A64      ");
+    serial_puthex((uint64_t)(uintptr_t)a64_blob_start);
+    serial_puts("  ");
+    serial_puthex(a64_blob_size());
+    serial_puts("  ilk 8B: ");
+    dump_blob_head(a64_blob_start, a64_blob_size());
+    serial_puts("\nmeclpp'den cagirmak icin:\n");
+    serial_puts("  invoke:riscv32  →  FST[4] = invoke_rv32()\n");
+    serial_puts("  invoke:aarch64  →  FST[5] = invoke_a64()\n");
+    serial_puts("\nAyri QEMU oturumunda calıstırmak icin:\n");
+    serial_puts("  sh calistir.sh --arch=riscv32\n");
+    serial_puts("  sh calistir.sh --arch=aarch64\n");
+}
+
+static void cmd_sysinfo(void)
+{
+    serial_puts("\n--- Sistem Bilgisi (x86-64) ---\n");
+    serial_puts("Mimari    : x86-64 Long Mode\n");
+    serial_puts("Bellenim  : FIRMAWORK v0.0003\n");
+    serial_puts("Seri Port : COM1 (0x3F8)  115200-8N1\n");
+    serial_puts("Ekran     : VGA Metin 0xB8000  80x25\n");
+    serial_puts("FST Tabanı: 0x80100000\n");
+    serial_puts("  FST[0] <- serial_puts\n");
+    serial_puts("  FST[1] <- serial_putc\n");
+    serial_puts("  FST[2] <- serial_getc\n");
+    serial_puts("  FST[3] <- serial_puthex\n");
+    serial_puts("  FST[4] <- invoke_rv32  (RV32 blob @ 0x200000)\n");
+    serial_puts("  FST[5] <- invoke_a64   (A64 blob @ 0x300000)\n");
+    serial_puts("Arch Bloblari:\n");
+    serial_puts("  RV32 @ 0x200000  (yukl: 0x80000000 NS16550)\n");
+    serial_puts("  A64  @ 0x300000  (yukl: 0x40000000 PL011)\n");
+}
+
+static void cmd_echo(void)
+{
+    serial_puts("\n[Echo Modu baslatildi -- Ctrl+] ile cikin]\n");
+    for (;;) {
+        char c = serial_getc();
+        if (c == 0x1D) break;
+        serial_putc(c);
+        if (c == '\r') serial_putc('\n');
+    }
+    serial_puts("\n[Echo Modu sonlandi]\n");
+}
+
+/* ================================================================
+ * Firmware Giriş Noktası  (entry.s'ten çağrılır)
+ *   mbi   : Multiboot bilgi yapısı işaretçisi
+ *   magic : Multiboot sihirli sayısı (0x2BADB002)
+ * ================================================================ */
+int main(void *mbi, uint64_t magic)
+{
+    /* COM1 seri portunu başlat */
+    serial_init();
+
+    /* VGA boot ekranını çiz */
+    vga_boot_screen();
+
+    /* FST'yi kur */
+    fst_init();
+
+    /* Hoş geldin mesajı */
+    serial_puts("\n>>> FIRMAWORK x86-64 LONG MODE CALISIYOR <<<\n");
+    serial_puts("COM1: 115200-8N1  |  VGA: 0xB8000 80x25\n");
+    serial_puts("Sayfalama: PML4 kimlik esleme  ilk 4 GB\n");
+    serial_puts("FST hazir @ 0x80100000\n");
+
+    /* Boot modunu doğrula ve bilgi yaz */
+    if (magic == 0x2BADB002UL) {
+        /* ---- Multiboot / GRUB modu ---- */
+        serial_puts("Boot : Multiboot (GRUB/QEMU -kernel)\n");
+        if (mbi) {
+            MultibootInfo *mb = (MultibootInfo *)mbi;
+            if (mb->flags & (1 << 0)) {
+                char buf[24];
+                serial_puts("Bellek: Alt=");
+                int_to_dec(mb->mem_lower, buf);
+                serial_puts(buf);
+                serial_puts(" KB  Ust=");
+                int_to_dec(mb->mem_upper, buf);
+                serial_puts(buf);
+                serial_puts(" KB\n");
+            }
+        }
+    } else if (magic == 0xF12AB007UL) {
+        /* ---- FIRMAWORK Özel Bootloader modu (Stage 2) ---- */
+        serial_puts("Boot : FIRMAWORK Ozel Bootloader  (Stage1->Stage2->Kernel)\n");
+        serial_puts("       EAX=0xF12AB007  (FIRMAB00T)\n");
+        serial_puts("       Disk: LBA0=S1 LBA1-16=S2 LBA17+=firmware.bin\n");
+    } else {
+        serial_puts("Boot : Bilinmeyen mod (magic=");
+        serial_puthex((unsigned long)magic);
+        serial_puts(")\n");
+    }
+
+    /* Ana menü döngüsü */
+    for (;;) {
+        print_menu();
+        char choice = serial_getc();
+        serial_putc(choice);
+        serial_puts("\n");
+        switch (choice) {
+            case '1': cmd_sysinfo();    break;
+            case '2': cmd_echo();       break;
+            case '3': cmd_fiawo_run();  break;
+            case '4': cmd_fiawo_info(); break;
+            case '5': cmd_arch_blobs(); break;
+            default:
+                serial_puts("Gecersiz secim.\n");
+                break;
+        }
+    }
+
+    return 0;
+}

@@ -1,0 +1,54 @@
+════════════════════════════════════════════════════════════════
+  Compilation complete.  →  kod.fiawo
+════════════════════════════════════════════════════════════════
+
+      -> kod.fiawo:  250 bytes  (0x80200000)
+
+[6/7] Compiling FIRMAWORK firmware (RV32IMA, clang + lld)...
+Warning: supplying the --target riscv32 != x86_64-unknown-linux-gnu argument to a nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+In file included from main.c:26:
+./font.h:31:9: warning: 'FONT_H' macro redefined [-Wmacro-redefined]
+   31 | #define FONT_H  16
+      |         ^
+./font.h:25:9: note: previous definition is here
+   25 | #define FONT_H
+      |         ^
+1 warning generated.
+In file included from vga.c:6:
+./font.h:31:9: warning: 'FONT_H' macro redefined [-Wmacro-redefined]
+   31 | #define FONT_H  16
+      |         ^
+./font.h:25:9: note: previous definition is here
+   25 | #define FONT_H
+      |         ^
+1 warning generated.
+      -> firmware.bin: 9447 bytes  (0x80000000)
+
+[7/7] Launching QEMU...
+
+  Guest memory map:
+    0x80000000  firmware.bin   (FIRMAWORK OS — UART driver, FST, menu)
+    0x80100000  FST[0..3]      (uart_puts|putc|getc|puthex, set at boot)
+    0x80200000  kod.fiawo      (launcher — delay, color, visit)
+    0x80300000  main.fiawo     (auth shell — all dual-mode tokens)
+
+  Authentication Shell — expected sequence after pressing [3]:
+    [LAUNCHER] FIRMAWORK Boot Sequence...
+    <1500 ms delay>
+    [LAUNCHER] Transferring control to 0x80300000...
+    <visit: lui t1,0x80300; jalr x0,0(t1)>
+    <ANSI clear screen>
+    [AUTH] FIRMAWORK Auth Shell banner
+    [SYS] metadata lines
+    [AUTH] Type lowercase 'q' to authenticate.
+    loop:
+      auth> _ (type any key)
+      wrong key → UART beep + 'Access denied, Attempt 0x1' + retry
+      'q'       → ACCESS GRANTED + fail count + 3s delay + reboot
+
+  Token showcase (all 20 dual-mode types in main.meclpp):
+    clean  color(u+s)  write(u+s)  read(u+s)  sys(s)
+    delay  halt        if(u+s)     set(u+s)   get
+    add(u+s) beep      :LABEL      jump       visit
+
+  Select [3] in the FIRMAWORK menu to start.  Exit: Ctrl+A then X

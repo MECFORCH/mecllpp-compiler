@@ -1,0 +1,5 @@
+write:"[STAGE 1] Executing pipeline..."
+wait:2 sec
+clean
+continue
+write:"[STAGE 2] Passed continue barrier successfully."

@@ -1,0 +1,25 @@
+We want to build a native C-based compiler for our custom programming language named "meclpp" and integrate it into our FIRMAWORK RISC-V bare-metal environment. 
+
+Please create/update the following 3 components:
+
+1. **Update `main.c` (FIRMAWORK Firmware)**:
+   - Implement a "Firmware Service Table". At the very beginning of `main()`, store the function pointer of `uart_puts` into a fixed, safe RAM address: `0x80100000`. This allows third-party binaries compiled from meclpp source code to use our firmware's screen printing capabilities.
+   - Update Option [3] in the menu to look for a compiled `.fiawo` binary loaded at `0x80200000`. When selected, print "Executing .fiawo payload via FIRMAWORK Services...", then jump directly to `0x80200000`.
+
+2. **Create a Native Compiler (`derleyici.c`)**:
+   - Write a standalone compiler program in host-side C. This compiler must read a meclpp source code file (e.g., `kod.meclpp`) containing the custom token syntax: `write:"your_string"`
+   - The compiler must parse the string inside the quotes, and generate a DIRECT binary output file named `program.fiawo` consisting of raw RISC-V machine instructions (Opcodes).
+   - The emitted RISC-V binary logic in `program.fiawo` must:
+     a) Load the absolute address of the appended string into register `a0`.
+     b) Load the FIRMAWORK service function pointer from `0x80100000` into register `t0`.
+     c) Execute a jump-and-link register instruction (`jalr ra, 0(t0)`) to call FIRMAWORK's print service.
+     d) Safely loop indefinitely or execute a return after printing.
+     e) Append the raw null-terminated ASCII string bytes immediately after the instruction bytes in the file.
+
+3. **Update `calistir.sh` (Automation Script)**:
+   - Add a step to compile our meclpp compiler tool first: `gcc derleyici.c -o derleyici`
+   - Create a sample input source file `kod.meclpp` containing exactly: `write:"hello world"`
+   - Execute the compiler: `./derleyici kod.meclpp` which outputs `program.fiawo`.
+   - Update the QEMU command line to inject this raw `program.fiawo` file into the guest RAM at the target address using the device loader flag: `-device loader,file=program.fiawo,addr=0x80200000` alongside the main `firmware.bin`.
+
+Ensure all generated code is highly robust, heavily commented, and uses precise RISC-V 32-bit opcodes for the custom binary generator.

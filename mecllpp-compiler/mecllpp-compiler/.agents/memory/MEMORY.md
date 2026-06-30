@@ -1,0 +1,1 @@
+- [FIRMAWORK Bootloader](firmawork-bootloader.md) — özel boot zinciri Stage1→Stage2→Kernel; INT 13h 0x100000 trick çalışmaz, 0x8000 + PM kopyalama kullan

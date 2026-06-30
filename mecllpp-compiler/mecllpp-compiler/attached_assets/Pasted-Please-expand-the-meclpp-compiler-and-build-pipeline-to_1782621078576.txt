@@ -1,0 +1,33 @@
+Please expand the meclpp compiler and build pipeline to support inter-program jumping using a new `visit:filename` token.
+
+Architectural Specification:
+1. **Memory Mapping & QEMU Setup**:
+   - The primary boot script (`kod.meclpp` -> `program.fiawo`) sits at RAM address `0x80200000`.
+   - The target script (`main.meclpp` -> `main.fiawo`) will be loaded at RAM address `0x80300000`.
+
+2. **Compiler Token Handling (`derleyici.c`)**:
+   - Add a new token type: `TOK_VISIT`.
+   - When the compiler encounters `visit:main.meclpp`, it must parse the argument. 
+   - Since we are on bare-metal without a file system, map the target file `main.meclpp` hardcoded to the target execution RAM address `0x80300000`.
+   - Emit a direct RISC-V unconditional jump/link sequence to `0x80300000`. (e.g., load `0x80300000` into a temporary register like `t1`, then `jalr x0, 0(t1)` to permanently hand over control).
+
+3. **Automation Pipeline Update (`calistir.sh`)**:
+   - Create the target application file `main.meclpp` containing:
+     clean
+     continue
+     write:"[MAIN] Successfully migrated control to main.meclpp!"
+     write:"[MAIN] System operating natively inside the new code segment."
+   
+   - Create/Update the launcher file `kod.meclpp` containing:
+     write:"[LAUNCHER] Initializing primary boot stage..."
+     wait:2 sec
+     visit:main.meclpp
+
+   - Update the compilation steps in `calistir.sh`:
+     a) Compile `kod.meclpp` into `program.fiawo` using `./derleyici`.
+     b) Compile `main.meclpp` into `main.fiawo` using `./derleyici`. (Ensure the compiler binary can output a custom specified filename or handles `main.meclpp` outputting to `main.fiawo` automatically).
+   
+   - Update the QEMU command line to inject BOTH raw binaries into their respective RAM slots:
+     `-device loader,file=program.fiawo,addr=0x80200000 -device loader,file=main.fiawo,addr=0x80300000`
+
+Keep all log outputs highly technical and professional. Ensure that when the user presses [3] in the FIRMAWORK menu, it executes the launcher, waits, and then completely switches context to the main program.

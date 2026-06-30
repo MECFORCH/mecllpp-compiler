@@ -1,0 +1,8 @@
+write:"FIRMAWORK .fiawo Segment 0"
+write:"derleyici v4 x86-64 ile uretildi"
+wait:1 sec
+write:"1 saniye beklendi."
+clean
+continue
+write:"Ekran temizlendi — devam ediyor."
+write:"FREEZE ile bitiyorum..."

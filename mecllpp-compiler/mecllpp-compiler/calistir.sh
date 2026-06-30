@@ -141,6 +141,21 @@ echo "      firmware-32.elf : $(wc -c < firmware-32.elf) bayt (ELF32)"
 echo ""
 
 # ----------------------------------------------------------------
+# Mimari blob yükleyici bayrakları
+# (.arch_rv32 ve .arch_a64 NOLOAD olduğu için firmware.elf'e
+#  gömülmez; QEMU bunları ayrıca 0x200000 ve 0x300000'e yükler.)
+# ----------------------------------------------------------------
+BLOB_FLAGS=""
+if [ -f "fw_rv32.bin" ]; then
+    BLOB_FLAGS="$BLOB_FLAGS -device loader,file=fw_rv32.bin,addr=0x200000,force-raw=on"
+    echo "  arch blob   : fw_rv32.bin  ($(wc -c < fw_rv32.bin) bayt) → 0x200000"
+fi
+if [ -f "fw_a64.bin" ]; then
+    BLOB_FLAGS="$BLOB_FLAGS -device loader,file=fw_a64.bin,addr=0x300000,force-raw=on"
+    echo "  arch blob   : fw_a64.bin   ($(wc -c < fw_a64.bin) bayt) → 0x300000"
+fi
+
+# ----------------------------------------------------------------
 # .fiawo bayrakları
 # ----------------------------------------------------------------
 FIAWO_FLAGS=""
@@ -169,9 +184,9 @@ if [ "$BOOT_MODE" = "custom" ]; then
     echo "  [Özel Bootloader Modu — Stage1/Stage2/Kernel zinciri]"
     echo "  Disk imajı oluşturuluyor..."
 
-    llvm-objcopy -O binary \
-        --remove-section=.arch_rv32 --remove-section=.arch_a64 \
-        firmware.elf firmware.bin
+    # NOLOAD bölümleri (.arch_rv32, .arch_a64) zaten PT_LOAD dışında —
+    # --remove-section gerekmez; objcopy yalnızca PT_LOAD içeriğini yazar.
+    llvm-objcopy -O binary firmware.elf firmware.bin
     FWSZ=$(wc -c < firmware.bin)
     FWSEC=$(( (FWSZ + 511) / 512 ))
     echo "  firmware.bin : $FWSZ bayt  ($FWSEC sektör)"
@@ -216,12 +231,12 @@ if [ "$BOOT_MODE" = "custom" ]; then
             -drive file=disk.img,format=raw,index=0,if=ide  \
             -serial stdio -monitor none                      \
             -vga std -display gtk                            \
-            -no-reboot -no-shutdown $FIAWO_FLAGS
+            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
     else
         qemu-system-x86_64                                  \
             -drive file=disk.img,format=raw,index=0,if=ide  \
             -serial stdio -monitor none -nographic           \
-            -no-reboot -no-shutdown $FIAWO_FLAGS
+            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
     fi
 
 else
@@ -230,14 +245,16 @@ else
     # ============================================================
     echo "  Bellek Haritası (Multiboot):"
     echo "    0x00100000   firmware-32.elf  (FIRMAWORK x86-64)"
+    echo "    0x00200000   fw_rv32.bin      (RV32 blob, NOLOAD → ayrı loader)"
+    echo "    0x00300000   fw_a64.bin       (A64 blob,  NOLOAD → ayrı loader)"
     echo "    0x000B8000   VGA metin tamponu (80×25)"
     echo "    0x80100000   FST[0..3]"
     [ -n "${FIAWO:-}" ]  && echo "    0x80200000   $FIAWO  (.fiawo Seg0)"
     [ -n "${FIAWO1:-}" ] && echo "    0x80300000   $FIAWO1  (.fiawo Seg1)"
     echo ""
     echo "  COM1 seri çıktısı bu terminale gelir."
-    echo "  Çıkış: Ctrl+A, ardından X"
-    [ -n "${FIAWO:-}" ] && echo "  .fiawo çalıştırmak için menüden [3] seçin."
+    echo "  Cikis: Ctrl+A, ardindan X  --veya--  menü [7] ACPI kapat"
+    [ -n "${FIAWO:-}" ] && echo "  .fiawo calistirmak icin menüden [3] secin."
     echo "════════════════════════════════════════════════════════════════"
     echo ""
 
@@ -246,12 +263,12 @@ else
             -kernel firmware-32.elf \
             -serial stdio -monitor none \
             -vga std -display gtk   \
-            -no-reboot -no-shutdown $FIAWO_FLAGS
+            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
     else
         qemu-system-x86_64          \
             -kernel firmware-32.elf \
             -serial stdio -monitor none -nographic \
-            -no-reboot -no-shutdown $FIAWO_FLAGS
+            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
     fi
 fi
 

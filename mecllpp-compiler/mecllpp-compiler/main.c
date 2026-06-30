@@ -56,6 +56,12 @@ static inline void outb(uint16_t port, uint8_t val)
                       : : "a"(val), "Nd"(port) : "memory");
 }
 
+static inline void outw(uint16_t port, uint16_t val)
+{
+    __asm__ volatile ("outw %0, %1"
+                      : : "a"(val), "Nd"(port) : "memory");
+}
+
 static inline uint8_t inb(uint16_t port)
 {
     uint8_t val;
@@ -463,6 +469,8 @@ static void print_menu(void)
     serial_puts("  [3] .fiawo Calistir  @ 0x80200000\n");
     serial_puts("  [4] .fiawo Durum     (segment kontrol)\n");
     serial_puts("  [5] Arch Bloblari    (RV32 + A64 bilgi)\n");
+    serial_puts("  [6] Saat / RTC       (CMOS tarih+saat)\n");
+    serial_puts("  [7] Kapat            (ACPI S5 shutdown)\n");
     serial_puts("========================================\n");
     serial_puts("Seciminiz: ");
 }
@@ -519,26 +527,120 @@ static void int_to_dec(uint64_t val, char *buf)
     buf[j] = '\0';
 }
 
+/* 2 basamaklı ondalık yaz (seri porta), örn: 07, 23 */
+static void serial_put2d(uint8_t v)
+{
+    serial_putc('0' + (v / 10));
+    serial_putc('0' + (v % 10));
+}
+
+/* ================================================================
+ * CMOS RTC Sürücüsü  (x86 I/O portları 0x70 / 0x71)
+ *
+ * 0x70 : CMOS adres (bit7=NMI devre dışı)
+ * 0x71 : CMOS veri
+ * Değerler BCD formatındadır (Status Reg B bit2=0 varsayımı).
+ * ================================================================ */
+static uint8_t cmos_read(uint8_t reg)
+{
+    outb(0x70, (uint8_t)(reg & 0x7F));  /* NMI mask'siz seç */
+    /* küçük gecikme — gerçek donanımda gerekli */
+    inb(0x80);
+    return inb(0x71);
+}
+
+static uint8_t bcd2bin(uint8_t bcd)
+{
+    return (uint8_t)(((bcd >> 4) & 0x0F) * 10u + (bcd & 0x0F));
+}
+
+static void cmd_rtc(void)
+{
+    /* Güncelleme döngüsü bitmeden okuma yaparsan yanlış değer alırsın */
+    while (cmos_read(0x0A) & 0x80)   /* Status Reg A bit7 = UIP */
+        ;
+
+    uint8_t sn  = bcd2bin(cmos_read(0x00));   /* saniye */
+    uint8_t dk  = bcd2bin(cmos_read(0x02));   /* dakika */
+    uint8_t sa  = bcd2bin(cmos_read(0x04));   /* saat   */
+    uint8_t gun = bcd2bin(cmos_read(0x07));   /* gün    */
+    uint8_t ay  = bcd2bin(cmos_read(0x08));   /* ay     */
+    uint8_t yil = bcd2bin(cmos_read(0x09));   /* yıl (son 2 hane) */
+
+    serial_puts("\n--- CMOS RTC ---\n");
+    serial_puts("Saat  : ");
+    serial_put2d(sa);  serial_putc(':');
+    serial_put2d(dk);  serial_putc(':');
+    serial_put2d(sn);  serial_puts("\n");
+
+    serial_puts("Tarih : 20");
+    serial_put2d(yil); serial_putc('-');
+    serial_put2d(ay);  serial_putc('-');
+    serial_put2d(gun); serial_puts("\n");
+
+    serial_puts("(CMOS RTC, BCD okuma — QEMU saatini yansıtır)\n");
+}
+
+/* ================================================================
+ * ACPI Kapatma  (QEMU PM1a_CNT — S5 Uyku Durumu)
+ *
+ * QEMU PIIX4 ACPI: PM_IO_BASE=0x600, PM1a_CNT=+0x04 → port 0x604
+ * SLP_EN (bit13) | SLP_TYP_S5 (QEMU'da genellikle 0) = 0x2000
+ * ================================================================ */
+static void __attribute__((noreturn)) cmd_shutdown(void)
+{
+    serial_puts("\n[KAPAT] ACPI S5 durumuna geciliyor...\n");
+    /* UART tamponunu boşalt */
+    for (volatile int i = 0; i < 500000; i++) {}
+
+    outw(0x604, 0x2000);   /* QEMU PIIX4 ACPI PM1a_CNT — S5 shutdown */
+    outw(0xB004, 0x2000);  /* eski QEMU SeaBIOS uyumu (yedek)         */
+
+    /* Buraya gelirse CPU'yu durdur */
+    serial_puts("[HALT] ACPI yanit vermedi, CPU durduruluyor.\n");
+    __asm__ volatile ("cli");
+    for (;;) __asm__ volatile ("hlt");
+}
+
+/* Blob boyutu <= 64 bayt ise gen_blobs.c stub'u → "henüz boş" */
+#define BLOB_STUB_THRESHOLD  64u
+
 static void cmd_arch_blobs(void)
 {
+    uint64_t rv_sz = rv32_blob_size();
+    uint64_t a6_sz = a64_blob_size();
+
     serial_puts("\n--- Gomulu Mimari Bloblari ---\n");
-    serial_puts("  Mimari   Adres       Boyut\n");
-    serial_puts("  -------  ----------  --------\n");
-    serial_puts("  RV32     ");
+
+    /* ---- RISC-V 32 ---- */
+    serial_puts("  RV32  @ ");
     serial_puthex((uint64_t)(uintptr_t)rv32_blob_start);
-    serial_puts("  ");
-    serial_puthex(rv32_blob_size());
-    serial_puts("  ilk 8B: ");
-    dump_blob_head(rv32_blob_start, rv32_blob_size());
-    serial_puts("  A64      ");
+    serial_puts("  boyut=");
+    serial_puthex(rv_sz);
+    if (rv_sz <= BLOB_STUB_THRESHOLD) {
+        serial_puts("  [HENUZ BOS — sadece gen_blobs.c stub]\n");
+        serial_puts("    Gercek blob icin: sh calistir.sh --arch=riscv32\n");
+    } else {
+        serial_puts("  ilk 8B: ");
+        dump_blob_head(rv32_blob_start, rv_sz);
+    }
+
+    /* ---- AArch64 ---- */
+    serial_puts("  A64   @ ");
     serial_puthex((uint64_t)(uintptr_t)a64_blob_start);
-    serial_puts("  ");
-    serial_puthex(a64_blob_size());
-    serial_puts("  ilk 8B: ");
-    dump_blob_head(a64_blob_start, a64_blob_size());
+    serial_puts("  boyut=");
+    serial_puthex(a6_sz);
+    if (a6_sz <= BLOB_STUB_THRESHOLD) {
+        serial_puts("  [HENUZ BOS — sadece gen_blobs.c stub]\n");
+        serial_puts("    Gercek blob icin: sh calistir.sh --arch=aarch64\n");
+    } else {
+        serial_puts("  ilk 8B: ");
+        dump_blob_head(a64_blob_start, a6_sz);
+    }
+
     serial_puts("\nmeclpp'den cagirmak icin:\n");
-    serial_puts("  invoke:riscv32  →  FST[4] = invoke_rv32()\n");
-    serial_puts("  invoke:aarch64  →  FST[5] = invoke_a64()\n");
+    serial_puts("  invoke:riscv32  ->  FST[4] = invoke_rv32()\n");
+    serial_puts("  invoke:aarch64  ->  FST[5] = invoke_a64()\n");
     serial_puts("\nAyri QEMU oturumunda calıstırmak icin:\n");
     serial_puts("  sh calistir.sh --arch=riscv32\n");
     serial_puts("  sh calistir.sh --arch=aarch64\n");
@@ -637,6 +739,8 @@ int main(void *mbi, uint64_t magic)
             case '3': cmd_fiawo_run();  break;
             case '4': cmd_fiawo_info(); break;
             case '5': cmd_arch_blobs(); break;
+            case '6': cmd_rtc();        break;
+            case '7': cmd_shutdown();   break;  /* noreturn */
             default:
                 serial_puts("Gecersiz secim.\n");
                 break;

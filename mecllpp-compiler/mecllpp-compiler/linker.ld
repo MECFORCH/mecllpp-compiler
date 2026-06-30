@@ -5,8 +5,16 @@
  *
  * Bellek haritası:
  *   0x00100000  x86-64 firmware kodu  (.text .rodata .data .bss)
- *   0x00200000  RISC-V 32 mikro-kernel blobu  (.arch_rv32)
- *   0x00300000  AArch64 mikro-kernel blobu    (.arch_a64)
+ *   0x00200000  RISC-V 32 mikro-kernel blobu  (.arch_rv32  NOLOAD)
+ *   0x00300000  AArch64 mikro-kernel blobu    (.arch_a64   NOLOAD)
+ *
+ * NOLOAD nedir?
+ *   Bu bölümler VMA'ya (sanal adres) yerleştirilir ama PT_LOAD
+ *   segment'i oluşturulmaz — dosyaya YAZILMAZ.  Stub (.incbin 40B)
+ *   veya gerçek blob fark etmeksizin firmware.elf/bin şişmez.
+ *   Blob'lar QEMU tarafından ayrı olarak yüklenir:
+ *     -device loader,file=fw_rv32.bin,addr=0x200000,force-raw=on
+ *     -device loader,file=fw_a64.bin ,addr=0x300000,force-raw=on
  *
  * NOT: Ayrı bir .multiboot bölümü yok.  Multiboot başlığı
  * .text.boot'un en başında yer alır ve PT_LOAD segmentine
@@ -49,9 +57,24 @@ SECTIONS
 
     _end = .;
 
-    /* .arch_rv32 / .arch_a64 ELF'e gömülmüyor.
-     * fw_rv32.bin ve fw_a64.bin ayrı dosya olarak QEMU -device loader
-     * ile 0x200000 ve 0x300000'e yüklenir (firmware.bin şişmez). */
+    /* ----------------------------------------------------------------
+     * Mimari blob rezervasyonları — NOLOAD
+     *
+     * VMA tahsis edilir, dosyaya yazılmaz (PT_LOAD yok).
+     * Stub (.incbin 40 B) veya gerçek blob fark etmeksizin
+     * firmware.bin / firmware-32.elf şişmez; 1MB+1MB gap oluşmaz.
+     *
+     * rv32_blob_start/end  ve  a64_blob_start/end  sembolleri
+     * blob_shims.s'deki etiketlerden gelir — main.c bunları extern
+     * kullanarak boyut ve adres bilgisi alır.
+     * ---------------------------------------------------------------- */
+    .arch_rv32 0x200000 (NOLOAD) : {
+        *(.arch_rv32)
+    } > RAM
+
+    .arch_a64 0x300000 (NOLOAD) : {
+        *(.arch_a64)
+    } > RAM
 
     /DISCARD/ : {
         *(.comment)

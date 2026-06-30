@@ -5,8 +5,8 @@
  *   0x000B8000  VGA Metin Tamponu (80×25, 16 renk)
  *   0x000F0000  BIOS ROM bölgesi
  *   0x00100000  Firmware kodu (bu ikili, Multiboot tarafından yüklenir)
- *   0x00200000  RISC-V 32 mikro-kernel blobu  (firmware.bin içine gömülü)
- *   0x00300000  AArch64 mikro-kernel blobu   (firmware.bin içine gömülü)
+ *   0x100000+   RISC-V 32 blobu  (.arch_rv32, .bss'ten hemen sonra gömülü)
+ *   0x100000+   AArch64 blobu   (.arch_a64,  rv32'den hemen sonra gömülü)
  *   0x80100000  Firmware Servis Tablosu (FST) — 6 yuva
  *   0x80200000  .fiawo Segment 0  (QEMU -device loader ile yüklenir)
  *   0x80300000  .fiawo Segment 1  (visit hedefi — main.meclpp)
@@ -16,8 +16,8 @@
  *   FST[1]  serial_putc(char)
  *   FST[2]  serial_getc(void) → char
  *   FST[3]  serial_puthex(unsigned long)
- *   FST[4]  invoke_rv32(void) — RV32 blob @ 0x200000 hakkında bilgi ver
- *   FST[5]  invoke_a64(void)  — A64 blob @ 0x300000 hakkında bilgi ver
+ *   FST[4]  invoke_rv32(void) — RV32 blobu hakkında bilgi ver (firmware.bin gömülü)
+ *   FST[5]  invoke_a64(void)  — A64 blobu hakkında bilgi ver  (firmware.bin gömülü)
  *
  * .fiawo Yükleyici:
  *   QEMU komutu: -device loader,file=kod.fiawo,addr=0x80200000,force-raw=on
@@ -455,11 +455,11 @@ void invoke_rv32(void)
     uint64_t addr = (uint64_t)(uintptr_t)rv32_blob_start;
     uint64_t sz   = rv32_blob_size();
     serial_puts("\n[INVOKE] RISC-V 32 blogu\n");
-    serial_puts("  Adres : ");  serial_puthex(addr);
-    serial_puts("  Boyut : ");  serial_puthex(sz);
-    serial_puts("  ilk 8B: "); dump_blob_head(rv32_blob_start, sz);
-    serial_puts("  [LOAD ADDR: 0x80000000 | NS16550 @ 0x10000000]\n");
-    serial_puts("  Blogu calıstırmak icin: --arch=riscv32 ile ./calistir.sh\n");
+    serial_puts("  ELF adresi : ");  serial_puthex(addr);
+    serial_puts("  Boyut      : ");  serial_puthex(sz);
+    serial_puts("  ilk 8B     : "); dump_blob_head(rv32_blob_start, sz);
+    serial_puts("  [QEMU virt: NS16550 @ 0x10000000 | DRAM @ 0x80000000]\n");
+    serial_puts("  Ayri calistirmak icin: sh calistir.sh --arch=riscv32\n");
 }
 
 void invoke_a64(void)
@@ -467,11 +467,11 @@ void invoke_a64(void)
     uint64_t addr = (uint64_t)(uintptr_t)a64_blob_start;
     uint64_t sz   = a64_blob_size();
     serial_puts("\n[INVOKE] AArch64 blogu\n");
-    serial_puts("  Adres : ");  serial_puthex(addr);
-    serial_puts("  Boyut : ");  serial_puthex(sz);
-    serial_puts("  ilk 8B: "); dump_blob_head(a64_blob_start, sz);
-    serial_puts("  [LOAD ADDR: 0x40000000 | PL011 @ 0x09000000]\n");
-    serial_puts("  Blogu calıstırmak icin: --arch=aarch64 ile ./calistir.sh\n");
+    serial_puts("  ELF adresi : ");  serial_puthex(addr);
+    serial_puts("  Boyut      : ");  serial_puthex(sz);
+    serial_puts("  ilk 8B     : "); dump_blob_head(a64_blob_start, sz);
+    serial_puts("  [QEMU virt: PL011 @ 0x09000000 | DRAM @ 0x40000000]\n");
+    serial_puts("  Ayri calistirmak icin: sh calistir.sh --arch=aarch64\n");
 }
 
 /* ================================================================
@@ -784,11 +784,11 @@ static void cmd_sysinfo(void)
     serial_puts("  FST[1] <- serial_putc\n");
     serial_puts("  FST[2] <- serial_getc\n");
     serial_puts("  FST[3] <- serial_puthex\n");
-    serial_puts("  FST[4] <- invoke_rv32  (RV32 blob @ 0x200000)\n");
-    serial_puts("  FST[5] <- invoke_a64   (A64 blob @ 0x300000)\n");
-    serial_puts("Arch Bloblari:\n");
-    serial_puts("  RV32 @ 0x200000  (yukl: 0x80000000 NS16550)\n");
-    serial_puts("  A64  @ 0x300000  (yukl: 0x40000000 PL011)\n");
+    serial_puts("  FST[4] <- invoke_rv32  (RV32 blob, firmware.bin gomulu)\n");
+    serial_puts("  FST[5] <- invoke_a64   (A64 blob,  firmware.bin gomulu)\n");
+    serial_puts("Arch Bloblari (firmware.bin'e gomulu):\n");
+    serial_puts("  RV32 @ "); serial_puthex((uint64_t)(uintptr_t)rv32_blob_start);
+    serial_puts("  A64  @ "); serial_puthex((uint64_t)(uintptr_t)a64_blob_start);
 }
 
 static void cmd_echo(void)

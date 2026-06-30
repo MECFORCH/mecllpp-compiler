@@ -4,17 +4,15 @@
  * Yükleme adresi : 0x100000 (1 MB) — Multiboot standardı
  *
  * Bellek haritası:
- *   0x00100000  x86-64 firmware kodu  (.text .rodata .data .bss)
- *   0x00200000  RISC-V 32 mikro-kernel blobu  (.arch_rv32  NOLOAD)
- *   0x00300000  AArch64 mikro-kernel blobu    (.arch_a64   NOLOAD)
+ *   0x00100000  .text / .rodata / .data  (x86-64 firmware kodu)
+ *   ...         .bss
+ *   ...+4K      .arch_rv32  (RV32 blobu — .bss'ten hemen sonra, boşluksuz)
+ *   ...+4K      .arch_a64   (A64 blobu  — rv32'den hemen sonra, boşluksuz)
  *
- * NOLOAD nedir?
- *   Bu bölümler VMA'ya (sanal adres) yerleştirilir ama PT_LOAD
- *   segment'i oluşturulmaz — dosyaya YAZILMAZ.  Stub (.incbin 40B)
- *   veya gerçek blob fark etmeksizin firmware.elf/bin şişmez.
- *   Blob'lar QEMU tarafından ayrı olarak yüklenir:
- *     -device loader,file=fw_rv32.bin,addr=0x200000,force-raw=on
- *     -device loader,file=fw_a64.bin ,addr=0x300000,force-raw=on
+ * Blokları .bss'ten hemen sonra (boşluksuz) yerleştirerek 2x1MB
+ * gap ve şişkin firmware.bin sorununu ortadan kaldırıyoruz.
+ * rv32_blob_start/end ve a64_blob_start/end sembolleri linker
+ * tarafından atanır; main.c bunları extern olarak kullanır.
  *
  * NOT: Ayrı bir .multiboot bölümü yok.  Multiboot başlığı
  * .text.boot'un en başında yer alır ve PT_LOAD segmentine
@@ -55,26 +53,25 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    _end = .;
-
     /* ----------------------------------------------------------------
-     * Mimari blob rezervasyonları — NOLOAD
+     * Mimari blob bölümleri — .bss'ten hemen sonra, boşluksuz.
      *
-     * VMA tahsis edilir, dosyaya yazılmaz (PT_LOAD yok).
-     * Stub (.incbin 40 B) veya gerçek blob fark etmeksizin
-     * firmware.bin / firmware-32.elf şişmez; 1MB+1MB gap oluşmaz.
-     *
-     * rv32_blob_start/end  ve  a64_blob_start/end  sembolleri
-     * blob_shims.s'deki etiketlerden gelir — main.c bunları extern
-     * kullanarak boyut ve adres bilgisi alır.
+     * Sabit adres (0x200000 / 0x300000) kullanmadığımız için
+     * firmware.bin içinde 2x1MB dolgu oluşmaz.
+     * Semboller (rv32_blob_start/end, a64_blob_start/end)
+     * blob_shims.s içindeki etiketlerden gelir; doğrudan
+     *   extern char rv32_blob_start[];
+     * ile main.c'den erişilir.
      * ---------------------------------------------------------------- */
-    .arch_rv32 0x200000 (NOLOAD) : {
-        *(.arch_rv32)
+    .arch_rv32 ALIGN(4096) : {
+        KEEP(*(.arch_rv32))
     } > RAM
 
-    .arch_a64 0x300000 (NOLOAD) : {
-        *(.arch_a64)
+    .arch_a64 ALIGN(4096) : {
+        KEEP(*(.arch_a64))
     } > RAM
+
+    _end = .;
 
     /DISCARD/ : {
         *(.comment)

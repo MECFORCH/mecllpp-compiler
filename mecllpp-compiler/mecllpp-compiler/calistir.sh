@@ -141,19 +141,9 @@ echo "      firmware-32.elf : $(wc -c < firmware-32.elf) bayt (ELF32)"
 echo ""
 
 # ----------------------------------------------------------------
-# Mimari blob yükleyici bayrakları
-# (.arch_rv32 ve .arch_a64 NOLOAD olduğu için firmware.elf'e
-#  gömülmez; QEMU bunları ayrıca 0x200000 ve 0x300000'e yükler.)
+# Mimari bloklar artık firmware.bin içine gömülü (NOLOAD kaldırıldı)
+# — ayrı loader bayrağına gerek yok.
 # ----------------------------------------------------------------
-BLOB_FLAGS=""
-if [ -f "fw_rv32.bin" ]; then
-    BLOB_FLAGS="$BLOB_FLAGS -device loader,file=fw_rv32.bin,addr=0x200000,force-raw=on"
-    echo "  arch blob   : fw_rv32.bin  ($(wc -c < fw_rv32.bin) bayt) → 0x200000"
-fi
-if [ -f "fw_a64.bin" ]; then
-    BLOB_FLAGS="$BLOB_FLAGS -device loader,file=fw_a64.bin,addr=0x300000,force-raw=on"
-    echo "  arch blob   : fw_a64.bin   ($(wc -c < fw_a64.bin) bayt) → 0x300000"
-fi
 
 # ----------------------------------------------------------------
 # .fiawo bayrakları
@@ -231,12 +221,12 @@ if [ "$BOOT_MODE" = "custom" ]; then
             -drive file=disk.img,format=raw,index=0,if=ide  \
             -serial stdio -monitor none                      \
             -vga std -display gtk                            \
-            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
+            -no-reboot $FIAWO_FLAGS
     else
         qemu-system-x86_64                                  \
             -drive file=disk.img,format=raw,index=0,if=ide  \
             -serial stdio -monitor none -nographic           \
-            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
+            -no-reboot $FIAWO_FLAGS
     fi
 
 else
@@ -245,8 +235,8 @@ else
     # ============================================================
     echo "  Bellek Haritası (Multiboot):"
     echo "    0x00100000   firmware-32.elf  (FIRMAWORK x86-64)"
-    echo "    0x00200000   fw_rv32.bin      (RV32 blob, NOLOAD → ayrı loader)"
-    echo "    0x00300000   fw_a64.bin       (A64 blob,  NOLOAD → ayrı loader)"
+    echo "    0x100000+    .arch_rv32       (RV32 blob, firmware.bin'e gömülü)"
+    echo "    0x100000+    .arch_a64        (A64 blob,  firmware.bin'e gömülü)"
     echo "    0x000B8000   VGA metin tamponu (80×25)"
     echo "    0x80100000   FST[0..3]"
     [ -n "${FIAWO:-}" ]  && echo "    0x80200000   $FIAWO  (.fiawo Seg0)"
@@ -263,12 +253,12 @@ else
             -kernel firmware-32.elf \
             -serial stdio -monitor none \
             -vga std -display gtk   \
-            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
+            -no-reboot $FIAWO_FLAGS
     else
         qemu-system-x86_64          \
             -kernel firmware-32.elf \
             -serial stdio -monitor none -nographic \
-            -no-reboot $BLOB_FLAGS $FIAWO_FLAGS
+            -no-reboot $FIAWO_FLAGS
     fi
 fi
 

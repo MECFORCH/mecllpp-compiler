@@ -9,9 +9,23 @@
  * İç yardımcılar
  * ---------------------------------------------------------------- */
 
+/* Varsayılan framebuffer taban adresi — gerçek mod INT 0x10 (VBE) geçişi
+ * henüz bağlanmadıysa kullanılır (QEMU std VGA/Bochs VBE varsayılan LFB). */
+static vga_uint32_t vga_fb_base = 0xFD000000UL;
+
+void vga_set_base(vga_uint32_t addr)
+{
+    vga_fb_base = addr;
+}
+
+vga_uint32_t vga_get_base(void)
+{
+    return vga_fb_base;
+}
+
 static inline volatile vga_uint32_t *fb_ptr(void)
 {
-    return (volatile vga_uint32_t *)VGA_FB_BASE;
+    return (volatile vga_uint32_t *)(unsigned long)vga_fb_base;
 }
 
 /* ----------------------------------------------------------------

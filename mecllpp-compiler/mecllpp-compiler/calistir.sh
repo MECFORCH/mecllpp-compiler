@@ -102,6 +102,10 @@ NIX_HARDENING_ENABLE='' clang $CFLAGS entry.s -o entry.o \
     2>&1 | grep -vE "^(Warning:|clang: warning)" || true
 echo "      entry.s  → entry.o"
 
+NIX_HARDENING_ENABLE='' clang $CFLAGS blob_shims.s -o blob_shims.o \
+    2>&1 | grep -vE "^(Warning:|clang: warning)" || true
+echo "      blob_shims.s → blob_shims.o"
+
 NIX_HARDENING_ENABLE='' clang $CFLAGS main.c  -o main.o  \
     2>&1 | grep -vE "^(Warning:|clang: warning)" || true
 echo "      main.c   → main.o"

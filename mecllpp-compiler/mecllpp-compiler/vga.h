@@ -26,7 +26,12 @@ typedef unsigned char      vga_uint8_t;
  * Donanım sabitleri
  * ---------------------------------------------------------------- */
 /* VGA_FB_BASE artık sabit değil — çalışma zamanında INT 0x10 ile alınır.
- * vga_set_base(addr) ile atanır, vga_get_base() ile okunur.         */
+ * vga_set_base(addr) ile atanır, vga_get_base() ile okunur.
+ * Gerçek mod geçişi henüz bağlanmadıysa vga.c içindeki varsayılan
+ * (QEMU std VGA/Bochs VBE LFB) kullanılır.                          */
+void vga_set_base(vga_uint32_t addr);
+vga_uint32_t vga_get_base(void);
+
 #define VGA_WIDTH       640
 #define VGA_HEIGHT      480
 #define VGA_BPP         4              /* bayt/piksel (32-bit XRGB8888)      */

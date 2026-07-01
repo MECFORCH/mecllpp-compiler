@@ -7,7 +7,7 @@
  *   0x00100000  Firmware kodu (bu ikili, Multiboot tarafından yüklenir)
  *   0x100000+   RISC-V 32 blobu  (.arch_rv32, .bss'ten hemen sonra gömülü)
  *   0x100000+   AArch64 blobu   (.arch_a64,  rv32'den hemen sonra gömülü)
- *   0x80100000  Firmware Servis Tablosu (FST) — 6 yuva
+ *   0x80100000  Firmware Servis Tablosu (FST) — 8 yuva
  *   0x80200000  .fiawo Segment 0  (QEMU -device loader ile yüklenir)
  *   0x80300000  .fiawo Segment 1  (visit hedefi — main.meclpp)
  *
@@ -18,6 +18,8 @@
  *   FST[3]  serial_puthex(unsigned long)
  *   FST[4]  invoke_rv32(void) — RV32 blobu hakkında bilgi ver (firmware.bin gömülü)
  *   FST[5]  invoke_a64(void)  — A64 blobu hakkında bilgi ver  (firmware.bin gömülü)
+ *   FST[6]  cmd_shutdown(void)     — ACPI S5 kapatma (noreturn)
+ *   FST[7]  get_time_service(void) — CMOS RTC oku, paketli uint64_t dondur
  *
  * .fiawo Yükleyici:
  *   QEMU komutu: -device loader,file=kod.fiawo,addr=0x80200000,force-raw=on
@@ -379,10 +381,10 @@ static void draw_sysinfo(void)
     vga_fill(0, 14, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
 
     vga_puts(2,  15, "Firmware Servis Tablosu (FST) @ 0x80100000:", cy, 0, 0);
-    vga_puts(4,  16, "FST[0]  serial_puts (const char *)", wh, 0, 0);
-    vga_puts(4,  17, "FST[1]  serial_putc (char)", wh, 0, 0);
-    vga_puts(4,  18, "FST[2]  serial_getc () -> char", wh, 0, 0);
-    vga_puts(4,  19, "FST[3]  serial_puthex (uint64_t)", wh, 0, 0);
+    vga_puts(4,  16, "FST[0]  serial_puts (const char *)  FST[4] invoke_rv32", wh, 0, 0);
+    vga_puts(4,  17, "FST[1]  serial_putc (char)          FST[5] invoke_a64", wh, 0, 0);
+    vga_puts(4,  18, "FST[2]  serial_getc () -> char      FST[6] cmd_shutdown", wh, 0, 0);
+    vga_puts(4,  19, "FST[3]  serial_puthex (uint64_t)    FST[7] get_time_service", wh, 0, 0);
 
     vga_fill(0, 20, VGA_COLS, '-', VGA_ATTR(VC_DGRAY, VC_BLACK));
 
@@ -545,6 +547,9 @@ static void __attribute__((noreturn)) fiawo_jump(uint64_t addr)
  * ================================================================ */
 #define FST_BASE  0x80100000UL
 
+static void __attribute__((noreturn)) cmd_shutdown(void);
+static uint64_t get_time_service(void);
+
 static void fst_init(void)
 {
     volatile uint64_t *fst = (volatile uint64_t *)FST_BASE;
@@ -554,6 +559,8 @@ static void fst_init(void)
     fst[3] = (uint64_t)(uintptr_t)serial_puthex;
     fst[4] = (uint64_t)(uintptr_t)invoke_rv32;
     fst[5] = (uint64_t)(uintptr_t)invoke_a64;
+    fst[6] = (uint64_t)(uintptr_t)cmd_shutdown;
+    fst[7] = (uint64_t)(uintptr_t)get_time_service;
 }
 
 /* ================================================================
@@ -670,6 +677,29 @@ static uint8_t bcd2bin(uint8_t bcd)
     return (uint8_t)(((bcd >> 4) & 0x0F) * 10u + (bcd & 0x0F));
 }
 
+/* ================================================================
+ * get_time_service — FST[7]
+ * CMOS RTC'yi okur, paketli tek bir uint64_t olarak dondurur:
+ *   bit 40-47: yil (son 2 hane, ikili)   bit 32-39: ay
+ *   bit 24-31: gun                        bit 16-23: saat
+ *   bit  8-15: dakika                     bit  0-7 : saniye
+ * ================================================================ */
+static uint64_t get_time_service(void)
+{
+    while (cmos_read(0x0A) & 0x80)   /* Status Reg A bit7 = UIP */
+        ;
+
+    uint64_t sn  = bcd2bin(cmos_read(0x00));
+    uint64_t dk  = bcd2bin(cmos_read(0x02));
+    uint64_t sa  = bcd2bin(cmos_read(0x04));
+    uint64_t gun = bcd2bin(cmos_read(0x07));
+    uint64_t ay  = bcd2bin(cmos_read(0x08));
+    uint64_t yil = bcd2bin(cmos_read(0x09));
+
+    return (yil << 40) | (ay << 32) | (gun << 24) |
+           (sa  << 16) | (dk  << 8) | sn;
+}
+
 static void cmd_rtc(void)
 {
     /* Güncelleme döngüsü bitmeden okuma yaparsan yanlış değer alırsın */
@@ -784,8 +814,10 @@ static void cmd_sysinfo(void)
     serial_puts("  FST[1] <- serial_putc\n");
     serial_puts("  FST[2] <- serial_getc\n");
     serial_puts("  FST[3] <- serial_puthex\n");
-    serial_puts("  FST[4] <- invoke_rv32  (RV32 blob, firmware.bin gomulu)\n");
-    serial_puts("  FST[5] <- invoke_a64   (A64 blob,  firmware.bin gomulu)\n");
+    serial_puts("  FST[4] <- invoke_rv32       (RV32 blob, firmware.bin gomulu)\n");
+    serial_puts("  FST[5] <- invoke_a64        (A64 blob,  firmware.bin gomulu)\n");
+    serial_puts("  FST[6] <- cmd_shutdown      (ACPI S5 kapatma, noreturn)\n");
+    serial_puts("  FST[7] <- get_time_service  (CMOS RTC, paketli uint64_t)\n");
     serial_puts("Arch Bloblari (firmware.bin'e gomulu):\n");
     serial_puts("  RV32 @ "); serial_puthex((uint64_t)(uintptr_t)rv32_blob_start);
     serial_puts("  A64  @ "); serial_puthex((uint64_t)(uintptr_t)a64_blob_start);
